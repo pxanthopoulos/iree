@@ -532,7 +532,8 @@ void addGPUVectorDistributePassPipeline(OpPassManager &funcPassManager,
   }
 
   // Problem specific (reduction) tiling.
-  funcPassManager.addPass(createGPUTensorTileToSerialLoops());
+  funcPassManager.addPass(
+      createGPUTensorTileToSerialLoops(/*coalesceLoops=*/true));
 
   if (usePadToModelSharedMemcpy) {
     LLVMGPUMatmulPadOption option = LLVMGPUMatmulPadOption::ReductionDims;
