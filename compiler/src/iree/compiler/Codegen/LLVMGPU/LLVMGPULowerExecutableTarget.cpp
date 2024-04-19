@@ -100,6 +100,9 @@ void LLVMGPULowerExecutableTargetPass::runOnOperation() {
   case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorize:
     addGPUVectorizationPassPipeline(pipeline);
     break;
+  case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUWinogradVectorize:
+    addGPUWinogradVectorizePassPipeline(pipeline);
+    break;
   case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulSimt:
     addGPUMatmulSimtPassPipeline(pipeline);
     break;

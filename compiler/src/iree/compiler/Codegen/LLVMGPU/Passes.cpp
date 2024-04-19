@@ -15,6 +15,7 @@
 #include "iree/compiler/Codegen/LLVMGPU/KernelConfig.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/LLVMGPU/ROCDLPasses.h"
+#include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -235,6 +236,42 @@ void addGPUVectorizationPassPipeline(OpPassManager &funcPassManager) {
   // tensor to memref
   addBufferizePasses(funcPassManager);
   funcPassManager.addPass(createGPUDistribute());
+
+  // Post bufferization optimizations.
+  funcPassManager.addPass(createLoopInvariantCodeMotionPass());
+  funcPassManager.addPass(memref::createFoldMemRefAliasOpsPass());
+  funcPassManager.addPass(createCanonicalizerPass());
+  funcPassManager.addPass(createCSEPass());
+  funcPassManager.addPass(createOptimizeVectorTransferPass());
+  funcPassManager.addPass(createOptimizeTensorInsertExtractSlicesPass());
+}
+
+//===---------------------------------------------------------------------===//
+// Winograd Vectorize
+//===---------------------------------------------------------------------===//
+
+void addGPUWinogradVectorizePassPipeline(OpPassManager &funcPassManager) {
+  tileAndDistributeToWorkgroup(funcPassManager);
+
+  funcPassManager.addPass(createCanonicalizerPass());
+  funcPassManager.addPass(createWorkgroupSpecializationPass());
+  funcPassManager.addPass(createCanonicalizerPass());
+  funcPassManager.addPass(createCSEPass());
+
+  // Distribute linalg onto threads within the workgroup.
+  funcPassManager.addPass(createGPUTilePass());
+  funcPassManager.addPass(
+      IREE::LinalgExt::createDecomposeWinogradTransformPass());
+  funcPassManager.addPass(createCanonicalizerPass());
+  funcPassManager.addPass(createCSEPass());
+
+  // Linalg -> vector
+  addGPUVectorizationPasses(funcPassManager);
+
+  // tensor to memref
+  addBufferizePasses(funcPassManager);
+  funcPassManager.addPass(
+      createGPUDistributeScfForPass(/*useBlockDims=*/false));
 
   // Post bufferization optimizations.
   funcPassManager.addPass(createLoopInvariantCodeMotionPass());

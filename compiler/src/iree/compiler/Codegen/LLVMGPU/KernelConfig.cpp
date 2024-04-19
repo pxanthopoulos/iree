@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <numeric>
 #include <optional>
+#include <type_traits>
 
 #include "iree/compiler/Codegen/Common/GPU/GPUHeuristics.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
@@ -926,6 +927,46 @@ static LogicalResult setFftConfig(mlir::FunctionOpInterface entryPoint,
       workgroupSize);
 }
 
+//===----------------------------------------------------------------------===//
+// Winograd Pipeline Configuration
+//===----------------------------------------------------------------------===//
+template <typename WinogradOp>
+static LogicalResult setWinogradOpConfig(mlir::FunctionOpInterface entryPoint,
+                                         WinogradOp op,
+                                         const TargetInfo &targetInfo) {
+  static_assert(
+      std::is_same<WinogradOp, IREE::LinalgExt::WinogradInputTransformOp>() ||
+          std::is_same<WinogradOp,
+                       IREE::LinalgExt::WinogradFilterTransformOp>() ||
+          std::is_same<WinogradOp,
+                       IREE::LinalgExt::WinogradOutputTransformOp>(),
+      "expected winograd transform op");
+  auto pipeline =
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUWinogradVectorize;
+  TileSizesListType tileSizes;
+  std::array<int64_t, 3> workgroupSize = {32, 4, 4};
+  auto iterationRank = op.getIterationDomainRank();
+  ArrayRef<int64_t> transformedShape =
+      op.getTransformedOperandType().getShape();
+  SmallVector<int64_t> workgroupTileSizes(iterationRank, 4);
+  // Set batch workgroup size
+  workgroupTileSizes.front() = 1;
+  // Set input channel workgroup size
+  workgroupTileSizes.back() = 32;
+  if (isa<IREE::LinalgExt::WinogradFilterTransformOp>(op)) {
+    // Set input channel workgroup size
+    workgroupTileSizes.front() = 32;
+    // Set output channel workgroup size
+    workgroupTileSizes.back() = 16;
+    workgroupSize = {16, 32, 1};
+  }
+  tileSizes.push_back(workgroupTileSizes);
+  SmallVector<int64_t> threadTileSizes(iterationRank, 1);
+  tileSizes.push_back(threadTileSizes);
+  return setOpConfigAndEntryPointFnTranslation(entryPoint, op, tileSizes,
+                                               pipeline, workgroupSize);
+}
+
 //====---------------------------------------------------------------------===//
 // Sort Pipeline Configuration
 //====---------------------------------------------------------------------===//
@@ -1826,6 +1867,18 @@ static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
   if (auto sortOp = dyn_cast<IREE::LinalgExt::SortOp>(computeOp)) {
     LDBG("Sort Config");
     return setSortConfig(entryPointFn, sortOp, targetInfo);
+  }
+  if (auto winogradOp =
+          dyn_cast<IREE::LinalgExt::WinogradInputTransformOp>(computeOp)) {
+    return setWinogradOpConfig(entryPointFn, winogradOp, targetInfo);
+  }
+  if (auto winogradOp =
+          dyn_cast<IREE::LinalgExt::WinogradOutputTransformOp>(computeOp)) {
+    return setWinogradOpConfig(entryPointFn, winogradOp, targetInfo);
+  }
+  if (auto winogradOp =
+          dyn_cast<IREE::LinalgExt::WinogradFilterTransformOp>(computeOp)) {
+    return setWinogradOpConfig(entryPointFn, winogradOp, targetInfo);
   }
   if (auto packOp = dyn_cast<tensor::PackOp>(computeOp)) {
     LDBG("Pack Config");
