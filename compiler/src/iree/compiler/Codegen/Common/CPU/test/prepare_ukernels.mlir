@@ -171,3 +171,66 @@ func.func @pack_with_outer_dims_perm(%arg0: tensor<484x16x64xbf16>, %arg1: tenso
 // CHECK-SAME:       outer_dims_perm = [0, 1] inner_dims_pos = [0, 1] inner_tiles = [16, 2]
 // CHECK-SAME:       into %[[DEST_SLICE]]
 // CHECK:        return %[[RES]]
+
+// -----
+
+func.func @unpack_without_transpose(%arg0: tensor<1828x8x64x16x16xf32>) -> tensor<1828x128x1024xf32> {
+  %6 = tensor.empty() : tensor<1828x128x1024xf32>
+  %unpack = tensor.unpack %arg0
+      outer_dims_perm = [0, 1, 2]
+      inner_dims_pos = [1, 2]
+      inner_tiles = [16, 16]
+      into %6 : tensor<1828x8x64x16x16xf32> -> tensor<1828x128x1024xf32>
+  return %unpack : tensor<1828x128x1024xf32>
+}
+// CHECK-LABEL:   func.func @unpack_without_transpose(
+// CHECK-SAME:                                        %[[SRC:.*]]: tensor<1828x8x64x16x16xf32>) -> tensor<1828x128x1024xf32> {
+// CHECK:           %[[CST_1:.*]] = arith.constant 1 : index
+// CHECK:           %[[CST_1828:.*]] = arith.constant 1828 : index
+// CHECK:           %[[CST_0:.*]] = arith.constant 0 : index
+// CHECK:           %[[DEST:.*]] = tensor.empty() : tensor<1828x128x1024xf32>
+// CHECK:           %[[RES:.*]] = scf.for %[[ITER:.*]] = %[[CST_0]] to %[[CST_1828]] 
+// CHECK-SAME:        step %[[CST_1]] iter_args(%[[ITER_ARG:.*]] = %[[DEST]]) -> (tensor<1828x128x1024xf32>) {
+// CHECK:             %[[SRC_SLICE:.*]] = tensor.extract_slice %[[SRC]]{{\[}}%[[ITER]], 0, 0, 0, 0] [1, 8, 64, 16, 16] [1, 1, 1, 1, 1] 
+// CHECK-SAME:          : tensor<1828x8x64x16x16xf32> to tensor<8x64x16x16xf32>
+// CHECK:             %[[DEST_SLICE:.*]] = tensor.extract_slice %[[ITER_ARG]]{{\[}}%[[ITER]], 0, 0] [1, 128, 1024] [1, 1, 1]
+// CHECK-SAME:          : tensor<1828x128x1024xf32> to tensor<128x1024xf32>
+// CHECK:             %[[UNPACK:.*]] = tensor.unpack %[[SRC_SLICE]] 
+// CHECK-SAME:         outer_dims_perm = [0, 1] inner_dims_pos = [0, 1] inner_tiles = [16, 16]
+// CHECK-SAME:         into %[[DEST_SLICE]] : tensor<8x64x16x16xf32> -> tensor<128x1024xf32>
+// CHECK:             %[[NEW_ITER_ARG:.*]] = tensor.insert_slice %[[UNPACK]] into %[[ITER_ARG]]{{\[}}%[[ITER]], 0, 0] [1, 128, 1024] [1, 1, 1]
+// CHECK-SAME:          : tensor<128x1024xf32> into tensor<1828x128x1024xf32>
+// CHECK:             scf.yield %[[NEW_ITER_ARG]] : tensor<1828x128x1024xf32>
+// CHECK:           }
+// CHECK:           return %[[RES]] : tensor<1828x128x1024xf32>
+// CHECK:         }
+
+// -----
+
+func.func @unpack_outer_dim_transpose(%arg0: tensor<4x8x29241x16x16xf32>) -> tensor<29241x128x64xf32> {
+  %cst = arith.constant 0.000000e+00 : bf16
+  %4 = tensor.empty() : tensor<29241x128x64xf32>
+  %unpack = tensor.unpack %arg0 outer_dims_perm = [2, 1, 0] inner_dims_pos = [1, 2] inner_tiles = [16, 16] into %4 : tensor<4x8x29241x16x16xf32> -> tensor<29241x128x64xf32>
+  return %unpack : tensor<29241x128x64xf32>
+}
+// CHECK-LABEL:   func.func @unpack_outer_dim_transpose(
+// CHECK-SAME:                                           %[[SRC:.*]]: tensor<4x8x29241x16x16xf32>) -> tensor<29241x128x64xf32> {
+// CHECK:           %[[CST_1:.*]] = arith.constant 1 : index
+// CHECK:           %[[CST_29K:.*]] = arith.constant 29241 : index
+// CHECK:           %[[CST_0:.*]] = arith.constant 0 : index
+// CHECK:           %[[DEST:.*]] = tensor.empty() : tensor<29241x128x64xf32>
+// CHECK:           %[[RES:.*]] = scf.for %[[ITER:.*]] = %[[CST_0]] to %[[CST_29K]] step %[[CST_1]] 
+// CHECK-SAME:        iter_args(%[[ITER_ARG:.*]] = %[[DEST]]) -> (tensor<29241x128x64xf32>) {
+// CHECK:             %[[SRC_SLICE:.*]] = tensor.extract_slice %[[SRC]][0, 0, %[[ITER]], 0, 0] [4, 8, 1, 16, 16] [1, 1, 1, 1, 1]
+// CHECK-SAME:          : tensor<4x8x29241x16x16xf32> to tensor<4x8x16x16xf32>
+// CHECK:             %[[DEST_SLICE:.*]] = tensor.extract_slice %[[ITER_ARG]]{{\[}}%[[ITER]], 0, 0] [1, 128, 64] [1, 1, 1] 
+// CHECK-SAME:          : tensor<29241x128x64xf32> to tensor<128x64xf32>
+// CHECK:             %[[UNPACK:.*]] = tensor.unpack %[[SRC_SLICE]] 
+// CHECK-SAME:         outer_dims_perm = [1, 0] inner_dims_pos = [0, 1] inner_tiles = [16, 16]
+// CHECK-SAME:         into %[[DEST_SLICE]] : tensor<4x8x16x16xf32> -> tensor<128x64xf32>
+// CHECK:             %[[NEW_ITER_ARG:.*]] = tensor.insert_slice %[[UNPACK]] into %[[ITER_ARG]]{{\[}}%[[ITER]], 0, 0] [1, 128, 64] [1, 1, 1]
+// CHECK-SAME:         : tensor<128x64xf32> into tensor<29241x128x64xf32>
+// CHECK:             scf.yield %[[NEW_ITER_ARG]] : tensor<29241x128x64xf32>
+// CHECK:           }
+// CHECK:           return %[[RES]] : tensor<29241x128x64xf32>
+// CHECK:         }
