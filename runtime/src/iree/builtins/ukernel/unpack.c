@@ -4,8 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/builtins/ukernel/unpack.h"
-
 #include "iree/builtins/ukernel/unpack_internal.h"
 
 enum { iree_uk_unpack_tmp_buf_size = 4096 };
@@ -49,14 +47,16 @@ static void iree_uk_unpack_validate(const iree_uk_unpack_params_t* params) {
                  flags_type == IREE_UK_FLAG_UNPACK_TYPE_I32I32 ||
                  flags_type == IREE_UK_FLAG_UNPACK_TYPE_F16F16 ||
                  flags_type == IREE_UK_FLAG_UNPACK_TYPE_BF16BF16);
-  IREE_UK_ASSERT(params->in_stride0 >= 0);
-  IREE_UK_ASSERT(params->out_stride0 >= 0);
   IREE_UK_ASSERT(params->out_size0 >= 0);
   IREE_UK_ASSERT(params->out_size1 >= 0);
   IREE_UK_ASSERT(params->in_size0 >= 0);
   IREE_UK_ASSERT(params->in_size1 >= 0);
   IREE_UK_ASSERT(params->in_size2 >= 0);
   IREE_UK_ASSERT(params->in_size3 >= 0);
+  IREE_UK_ASSERT(params->in_stride0 >= 0);
+  IREE_UK_ASSERT(params->in_stride1 == params->in_size2 * params->in_size3);
+  IREE_UK_ASSERT(params->out_stride0 >= 0);
+  IREE_UK_ASSERT(params->out_stride1 >= 0);
   // Check that the input and output shapes match, give or take padding that
   // must not exceed the inner tile size.s
   iree_uk_index_t outer_size0 = params->in_size0;
@@ -96,10 +96,18 @@ static bool iree_uk_unpack_early(const iree_uk_unpack_params_t* params) {
 static void iree_uk_copy_slice(iree_uk_index_t src_stride0, const char* src_buf,
                                iree_uk_index_t dst_size0,
                                iree_uk_index_t dst_size1,
-                               iree_uk_index_t dst_stride0, char* dst_buf,
+                               iree_uk_index_t dst_stride0,
+                               iree_uk_index_t dst_stride1, char* dst_buf,
                                iree_uk_index_t elem_size) {
   for (iree_uk_index_t in_i0 = 0; in_i0 < dst_size0; in_i0++) {
-    iree_uk_memcpy(dst_buf, src_buf, dst_size1 * elem_size);
+    if (dst_stride1 == 1) {
+      iree_uk_memcpy(dst_buf, src_buf, dst_size1 * elem_size);
+    } else {
+      for (iree_uk_index_t in_i1 = 0; in_i1 < dst_size1; in_i1++) {
+        iree_uk_memcpy(dst_buf + in_i1 * dst_stride1 * elem_size,
+                       src_buf + in_i1 * elem_size, elem_size);
+      }
+    }
     dst_buf += dst_stride0 * elem_size;
     src_buf += src_stride0 * elem_size;
   }
@@ -113,8 +121,9 @@ static void iree_uk_unpack_row_using_tmpbuf(
     iree_uk_index_t dim1_tile_end, iree_uk_index_t dim0_write_size,
     iree_uk_index_t tile_size0, iree_uk_index_t tile_size1,
     iree_uk_index_t elem_size, iree_uk_index_t out_size1,
-    iree_uk_index_t out_stride0, iree_uk_index_t in_stride1,
-    iree_uk_unpack_tmpbuf_helper_t* helper, const char* in_buf, char* out_buf) {
+    iree_uk_index_t out_stride0, iree_uk_index_t out_stride1,
+    iree_uk_index_t in_stride1, iree_uk_unpack_tmpbuf_helper_t* helper,
+    const char* in_buf, char* out_buf) {
   iree_uk_index_t dim1_tile = dim1_tile_start;
   while (dim1_tile < dim1_tile_end) {
     iree_uk_index_t dim1_chunk_tiles = iree_uk_index_clamp(
@@ -126,9 +135,10 @@ static void iree_uk_unpack_row_using_tmpbuf(
     tile_func(helper->tmp_buf, in_buf + dim1_tile * in_stride1 * elem_size,
               dim1_chunk_tiles, dim1_chunk_src_width, in_stride1, elem_size,
               tile_size0, tile_size1);
-    iree_uk_copy_slice(dim1_chunk_src_width, helper->tmp_buf, dim0_write_size,
-                       dim1_write_size, out_stride0,
-                       out_buf + dim1_tile * tile_size1 * elem_size, elem_size);
+    iree_uk_copy_slice(
+        dim1_chunk_src_width, helper->tmp_buf, dim0_write_size, dim1_write_size,
+        out_stride0, out_stride1,
+        out_buf + dim1_tile * tile_size1 * out_stride1 * elem_size, elem_size);
     dim1_tile += dim1_chunk_tiles;
   }
 }
@@ -159,14 +169,17 @@ static void iree_uk_unpack_using_tile_func(
   // Prepare for handling incomplete tiles with a temporary buffer.
   iree_uk_unpack_tmpbuf_helper_t tmpbuf_helper;
   if (params->out_size0 < outer_size0 * tile_size0 ||
-      params->out_size1 < outer_size1 * tile_size1) {
+      params->out_size1 < outer_size1 * tile_size1 ||
+      params->out_stride1 != 1) {
     iree_uk_unpack_tmpbuf_helper_init(tile_size0, tile_size1, elem_size,
                                       &tmpbuf_helper);
   }
   // Compute number of tiles along both dimensions that fit entirely within the
   // source buffer's boundaries.
-  int dim1_full_tiles = iree_uk_div_nonneg_by_pos_and_likely_po2_i32(
-      params->out_size1, tile_size1);
+  int dim1_full_tiles = params->out_stride1 == 1
+                            ? iree_uk_div_nonneg_by_pos_and_likely_po2_i32(
+                                  params->out_size1, tile_size1)
+                            : 0;
   iree_uk_index_t i0 = 0;
   for (; i0 <= params->out_size0 - tile_size0; i0 += tile_size0) {
     // Pack whole tiles that do not require padding (entirely within the source
@@ -177,7 +190,7 @@ static void iree_uk_unpack_using_tile_func(
     iree_uk_unpack_row_using_tmpbuf(
         tile_func, dim1_full_tiles, outer_size1, tile_size0, tile_size0,
         tile_size1, elem_size, params->out_size1, params->out_stride0,
-        in_stride1, &tmpbuf_helper, in_buf, out_buf);
+        params->out_stride1, in_stride1, &tmpbuf_helper, in_buf, out_buf);
     out_buf += tile_size0 * params->out_stride0 * elem_size;
     in_buf += in_stride0 * elem_size;
   }
@@ -187,8 +200,8 @@ static void iree_uk_unpack_using_tile_func(
         iree_uk_index_clamp(params->out_size0 - i0, 0, tile_size0);
     iree_uk_unpack_row_using_tmpbuf(
         tile_func, 0, outer_size1, dim0_write_size, tile_size0, tile_size1,
-        elem_size, params->out_size1, params->out_stride0, in_stride1,
-        &tmpbuf_helper, in_buf, out_buf);
+        elem_size, params->out_size1, params->out_stride0, params->out_stride1,
+        in_stride1, &tmpbuf_helper, in_buf, out_buf);
     out_buf += tile_size0 * params->out_stride0 * elem_size;
     in_buf += in_stride0 * elem_size;
   }
@@ -206,8 +219,9 @@ void iree_uk_unpack_p(const iree_uk_unpack_params_t* params) {
 
 IREE_UK_EXPORT void iree_uk_unpack(
     const void* in_buffer, iree_uk_index_t in_offset,
-    iree_uk_index_t in_stride0, void* out_buffer, iree_uk_index_t out_offset,
-    iree_uk_index_t out_stride0, iree_uk_index_t in_size0,
+    iree_uk_index_t in_stride0, iree_uk_index_t in_stride1, void* out_buffer,
+    iree_uk_index_t out_offset, iree_uk_index_t out_stride0,
+    iree_uk_index_t out_stride1, iree_uk_index_t in_size0,
     iree_uk_index_t in_size1, iree_uk_index_t in_size2,
     iree_uk_index_t in_size3, iree_uk_index_t out_size0,
     iree_uk_index_t out_size1, iree_uk_uint32_t flags,
@@ -215,9 +229,11 @@ IREE_UK_EXPORT void iree_uk_unpack(
   iree_uk_unpack_params_t params = {.in_buffer = in_buffer,
                                     .in_offset = in_offset,
                                     .in_stride0 = in_stride0,
+                                    .in_stride1 = in_stride1,
                                     .out_buffer = out_buffer,
                                     .out_offset = out_offset,
                                     .out_stride0 = out_stride0,
+                                    .out_stride1 = out_stride1,
                                     .in_size0 = in_size0,
                                     .in_size1 = in_size1,
                                     .in_size2 = in_size2,
