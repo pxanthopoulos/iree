@@ -57,9 +57,8 @@ static void iree_pack_reference(const iree_uk_pack_params_t* params) {
               }
             }
           } else {
-            iree_uk_index_t in_offset = params->in_offset +
-                                        i1 * params->in_stride1 +
-                                        i0 * params->in_stride0;
+            iree_uk_index_t in_offset =
+                params->in_offset + i1 + i0 * params->in_stride0;
             const char* in_ptr =
                 ((char*)params->in_buffer) + in_offset * elem_size;
             memcpy(out_ptr, in_ptr, elem_size);
@@ -77,12 +76,8 @@ static void iree_uk_test_pack_for_shape_params(
   // Populate strides first - we need them below to compute buffer lengths.
   // Randomly make strides either tight or not to exercise all cases.
   iree_uk_random_engine_t* engine = iree_uk_test_random_engine(test);
-  params.in_stride1 = 1 + iree_uk_random_engine_get_0_1(engine);
-  params.in_stride0 = params.in_size1 * params.in_stride1 +
-                      iree_uk_random_engine_get_0_1(engine);
-  params.out_stride1 = params.out_size2 * params.out_size3;
-  params.out_stride0 = params.out_size1 * params.out_stride1 +
-                       iree_uk_random_engine_get_0_1(engine);
+  params.in_stride0 = params.in_size1 + iree_uk_random_engine_get_0_1(engine);
+  params.out_stride0 = params.out_size1 * params.out_size2 * params.out_size3;
   iree_uk_pack_type_t pack_type = iree_uk_pack_type(params.flags);
   iree_uk_type_t in_type = iree_uk_pack_in_type(pack_type);
   iree_uk_index_t in_buffer_size =
@@ -117,10 +112,7 @@ static void iree_uk_test_pack_for_shape_params(
   iree_pack_reference(&reference_params);
   iree_uk_pack_p(&actual_params);
 
-  if (!iree_uk_2d_buffers_equal(
-          actual_out_buffer, reference_out_buffer, out_type, params.out_size0,
-          params.out_size1 * params.out_size2 * params.out_size3,
-          params.out_stride0, 1)) {
+  if (memcmp(actual_out_buffer, reference_out_buffer, out_buffer_size)) {
     IREE_UK_TEST_FAIL(test);
   }
 
