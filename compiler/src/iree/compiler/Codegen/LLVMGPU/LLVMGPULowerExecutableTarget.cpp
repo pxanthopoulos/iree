@@ -92,7 +92,7 @@ getPipelineOptions(FunctionOpInterface funcOp,
       // Get the workgroups reorder config and enable the workgroup reordering
       Attribute reorderGroupOption =
           config.get(LLVMGPUAttrNames::kReorderWorkgroups);
-      assert(mlir::isa<mlir::StringAttr>(reorderGroupOption) &&
+      assert(isa<StringAttr>(reorderGroupOption) &&
              "reorder strategy should be a StringAttr");
       StringRef reorderStr =
           llvm::cast<StringAttr>(reorderGroupOption).getValue();
@@ -101,8 +101,10 @@ getPipelineOptions(FunctionOpInterface funcOp,
       } else if (reorderStr == "swizzle") {
         pipelineOptions.reorderStrategy = ReorderWorkgrupsStrategy::Swizzle;
       } else {
-        assert(reorderStr == "none" && "Unhandled reorder option");
-        pipelineOptions.reorderStrategy = ReorderWorkgrupsStrategy::None;
+        if (reorderStr != "none")
+          funcOp.emitOpError("Unhandled reorder option");
+        else
+          pipelineOptions.reorderStrategy = ReorderWorkgrupsStrategy::None;
       }
     }
   }
