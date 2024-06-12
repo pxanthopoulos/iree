@@ -50,16 +50,16 @@ namespace mlir::iree_compiler {
 
 constexpr int64_t kDefaultSubgroupSize = 32;
 
-static llvm::cl::opt<ReorderWorkgrupsStrategy> clReorderWorkgroupsStrategy(
+static llvm::cl::opt<ReorderWorkgroupsStrategy> clReorderWorkgroupsStrategy(
     "iree-codegen-reorder-workgroups-strategy",
     llvm::cl::desc("Reorder workgroup IDs using the selected strategy"),
-    llvm::cl::values(clEnumValN(ReorderWorkgrupsStrategy::None, "none",
+    llvm::cl::values(clEnumValN(ReorderWorkgroupsStrategy::None, "none",
                                 "No workgroup reordering"),
-                     clEnumValN(ReorderWorkgrupsStrategy::Swizzle, "swizzle",
+                     clEnumValN(ReorderWorkgroupsStrategy::Swizzle, "swizzle",
                                 "Swizzle"),
-                     clEnumValN(ReorderWorkgrupsStrategy::Transpose,
+                     clEnumValN(ReorderWorkgroupsStrategy::Transpose,
                                 "transpose", "Transpose")),
-    llvm::cl::init(ReorderWorkgrupsStrategy::None));
+    llvm::cl::init(ReorderWorkgroupsStrategy::None));
 
 static llvm::cl::opt<unsigned> clReorderWorkgroupsLogSwizzleTile(
     "iree-codegen-reorder-workgroups-log-swizzle-tile",
@@ -81,12 +81,12 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                               const LLVMGPUPipelineOptions &options) {
   StringRef reorderStr = "<not set>";
   if (options.reorderStrategy) {
-    if (options.reorderStrategy == ReorderWorkgrupsStrategy::Transpose) {
+    if (options.reorderStrategy == ReorderWorkgroupsStrategy::Transpose) {
       reorderStr = "transpose";
-    } else if (options.reorderStrategy == ReorderWorkgrupsStrategy::Swizzle) {
+    } else if (options.reorderStrategy == ReorderWorkgroupsStrategy::Swizzle) {
       reorderStr = "swizzle";
     } else {
-      assert(options.reorderStrategy == ReorderWorkgrupsStrategy::None &&
+      assert(options.reorderStrategy == ReorderWorkgroupsStrategy::None &&
              "Unhandled reorder option");
       reorderStr = "none";
     }
@@ -199,11 +199,13 @@ static LogicalResult canReorderWorkgroups(FunctionOpInterface funcOp) {
   return success(workgroupCounts.size() >= 2);
 }
 
-static ReorderWorkgrupsStrategy getWorkgroupsReoderStrategy(
-    const std::optional<ReorderWorkgrupsStrategy> &option) {
+// Reconciles workgroup reordering strategy based on the pipeline `option` and
+// the CLI flag.
+static ReorderWorkgroupsStrategy getWorkgroupsReoderStrategy(
+    const std::optional<ReorderWorkgroupsStrategy> &option) {
   if (option)
     return *option;
-  return clReorderWorkgroupsStrategy;
+  return option.value_or(clReorderWorkgroupsStrategy);
 }
 
 //===----------------------------------------------------------------------===//
@@ -431,7 +433,7 @@ void addGPUMatmulSimtPassPipeline(OpPassManager &funcPassManager,
     funcPassManager.addPass(createGPUReduceBankConflictsPass());
   }
 
-  ReorderWorkgrupsStrategy reorderStrategy =
+  ReorderWorkgroupsStrategy reorderStrategy =
       getWorkgroupsReoderStrategy(options.reorderStrategy);
   funcPassManager.addPass(createReorderWorkgroups(
       reorderStrategy, clReorderWorkgroupsLogSwizzleTile,
@@ -480,7 +482,7 @@ void addGPUMatmulTensorCorePassPipeline(OpPassManager &funcPassManager,
 
   funcPassManager.addPass(createRemoveSingleIterationLoopPass());
 
-  ReorderWorkgrupsStrategy reorderStrategy =
+  ReorderWorkgroupsStrategy reorderStrategy =
       getWorkgroupsReoderStrategy(options.reorderStrategy);
   funcPassManager.addPass(createReorderWorkgroups(
       reorderStrategy, clReorderWorkgroupsLogSwizzleTile,
@@ -548,7 +550,7 @@ void addGPUMatmulTensorCoreMmaSyncPassPipeline(
 
   funcPassManager.addPass(createRemoveSingleIterationLoopPass());
 
-  ReorderWorkgrupsStrategy reorderStrategy =
+  ReorderWorkgroupsStrategy reorderStrategy =
       getWorkgroupsReoderStrategy(options.reorderStrategy);
   funcPassManager.addPass(createReorderWorkgroups(
       reorderStrategy, clReorderWorkgroupsLogSwizzleTile,
@@ -707,7 +709,7 @@ void addGPUVectorDistributePassPipeline(OpPassManager &funcPassManager,
                                         bool usePadToModelSharedMemcpy) {
   tileAndDistributeToWorkgroup(funcPassManager);
 
-  ReorderWorkgrupsStrategy reorderStrategy =
+  ReorderWorkgroupsStrategy reorderStrategy =
       getWorkgroupsReoderStrategy(options.reorderStrategy);
   funcPassManager.addPass(createReorderWorkgroups(
       reorderStrategy, clReorderWorkgroupsLogSwizzleTile,
