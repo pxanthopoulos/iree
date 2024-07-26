@@ -90,28 +90,19 @@ static Value truncateFloat(OpBuilder &builder, Location loc, AffineMap inputMap,
         auto srcTy = cast<FloatType>(args[0].getType());
         auto dstTy = cast<FloatType>(args[1].getType());
 
-        // We clamp to the min / max of the floating point representation
-        double mnDbl =
-            APFloat::getLargest(dstTy.getFloatSemantics(), /*Negative=*/true)
-                .convertToDouble();
         double mxDbl =
             APFloat::getLargest(dstTy.getFloatSemantics(), /*Negative=*/false)
                 .convertToDouble();
 
         // Truncate to the `fp8` range so avoid nan values.
-        Value mn = builder.create<arith::ConstantOp>(
-            loc, builder.getFloatAttr(srcTy, mnDbl));
         Value mx = builder.create<arith::ConstantOp>(
             loc, builder.getFloatAttr(srcTy, mxDbl));
         Value gt = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGT,
                                            args[0], mx);
-        Value lt = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT,
-                                           args[0], mn);
         Value sel0 = b.create<arith::SelectOp>(loc, gt, mx, args[0]);
-        Value sel1 = b.create<arith::SelectOp>(loc, lt, mn, sel0);
 
         // Convert scale to the same datatype as input.
-        Value trunc = convertScalarToDtype(b, loc, sel1, dstTy,
+        Value trunc = convertScalarToDtype(b, loc, sel0, dstTy,
                                            /*isUnsignedCast=*/false);
         b.create<linalg::YieldOp>(loc, trunc);
       });
