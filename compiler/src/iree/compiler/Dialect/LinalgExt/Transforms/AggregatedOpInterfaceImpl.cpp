@@ -354,10 +354,7 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
             return sizes[cast<AffineDimExpr>(dimExpr).getPosition()];
           }));
 
-      auto fpTy = cast<FloatType>(vETy);
-      double largestDbl =
-          APFloat::getLargest(fpTy.getFloatSemantics(), /*Negative=*/false)
-              .convertToDouble();
+      double largestDbl = 448;
 
       // We normalize p from [0, max] to [0, fp8.max] to guarantee we
       // use the full `fp8` range, then renormlize post Softmax@V matmul
@@ -372,7 +369,6 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
       AffineMap scaleMap = AffineMap::get(/*dimCount=*/maxMap.getNumInputs(),
                                           /*symbolCount=*/0, getContext());
       p = scaleValueInPlace(b, loc, pMap, scaleMap, p, pScaleInv);
-      norm = scaleValueInPlace(b, loc, normMap, scaleMap, norm, pScaleInv);
     }
 
     Value convertP = b.create<tensor::EmptyOp>(loc, sSizes, vETy);
@@ -385,13 +381,6 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
 
   // newAcc = P @ V + newAcc
   newAcc = computeMatmul(b, loc, pMap, getValueMap(), accMap, p, value, newAcc);
-
-  // Update for for the FP8 dynamic scale:
-  if (pScale) {
-    AffineMap scaleMap = AffineMap::get(/*dimCount=*/maxMap.getNumInputs(),
-                                        /*symbolCount=*/0, getContext());
-    newAcc = scaleValueInPlace(b, loc, accMap, scaleMap, newAcc, pScale);
-  }
 
   return SmallVector<Value>{newAcc, newMax, newSum};
 }

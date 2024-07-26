@@ -52,9 +52,13 @@ static Value applyFinalScaling(Value result, Value newSum, Location loc,
   auto genericOp = builder.create<linalg::GenericOp>(
       loc, result.getType(), newSum, result, indexingMaps, iteratorTypes,
       [&](OpBuilder &b, Location loc, ValueRange args) {
-        Value one = b.create<arith::ConstantOp>(
-            loc, b.getFloatAttr(args[0].getType(), 1.0));
-        Value reciprocal = b.create<arith::DivFOp>(loc, one, args[0]);
+
+      double largestDbl = 448;
+      Value pScale = b.create<arith::ConstantOp>(
+          loc, b.getFloatAttr(args[0].getType(), 1.0 / largestDbl));
+
+        Value reciprocal = b.create<arith::DivFOp>(loc, pScale, args[0]);
+
         Value result = b.create<arith::MulFOp>(loc, reciprocal, args[1]);
         b.create<linalg::YieldOp>(loc, result);
       });
