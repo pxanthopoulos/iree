@@ -53,7 +53,7 @@ static Value applyFinalScaling(Value result, Value newSum, Location loc,
       loc, result.getType(), newSum, result, indexingMaps, iteratorTypes,
       [&](OpBuilder &b, Location loc, ValueRange args) {
 
-      double largestDbl = 448;
+      double largestDbl = 240;
       Value pScale = b.create<arith::ConstantOp>(
           loc, b.getFloatAttr(args[0].getType(), 1.0 / largestDbl));
 

@@ -354,7 +354,8 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
             return sizes[cast<AffineDimExpr>(dimExpr).getPosition()];
           }));
 
-      double largestDbl = 448;
+      auto fpTy = cast<FloatType>(vETy);
+      double largestDbl = 240;
 
       // We normalize p from [0, max] to [0, fp8.max] to guarantee we
       // use the full `fp8` range, then renormlize post Softmax@V matmul
