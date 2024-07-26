@@ -242,7 +242,6 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   Value oldAcc = getOutput();
   Value oldMax = getMax();
   Value oldSum = getSum();
-  Type elementType = getElementTypeOrSelf(getOutput().getType());
 
   FailureOr<AttentionOpDetail> maybeOpInfo =
       AttentionOpDetail::get(getIndexingMapsArray());
@@ -293,8 +292,13 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   // SMap = QMap @ KMap
   Type sElementType = getOutput().getType().getElementType();
   Value emptyS = b.create<tensor::EmptyOp>(loc, sSizes, sElementType);
-  Value sZero = b.create<arith::ConstantOp>(loc, b.getZeroAttr(sElementType));
-  Value s = b.create<linalg::FillOp>(loc, sZero, emptyS).getResult(0);
+
+  bool isfp8 = qETy.getIntOrFloatBitWidth() == 8;
+  double scaleCorrection = isfp8 ? log2(240.0) : 1.0;
+  Value fpCorrection = b.create<arith::ConstantOp>(
+      loc, b.getFloatAttr(sElementType, scaleCorrection));
+  Value sOffset = b.create<arith::DivFOp>(loc, fpCorrection, scale);
+  Value s = b.create<linalg::FillOp>(loc, sOffset, emptyS).getResult(0);
   s = computeMatmul(b, loc, getQueryMap(), getKeyMap(), sMap, query, key, s);
 
   // For low bit-depth types we perform post Q @ K scaling. This is to avoid
@@ -336,32 +340,8 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   AffineMap accMap = getOutputMap();
 
   // ---- Scale and truncate LHS to match RHS ----
-  Value pScale;
   auto pETy = getElementTypeOrSelf(p.getType());
   if (pETy != vETy && isa<FloatType>(vETy)) {
-    if (vETy.getIntOrFloatBitWidth() <= 8) {
-      SmallVector<OpFoldResult> mSizes(
-          llvm::map_range(maxMap.getResults(), [&](AffineExpr dimExpr) {
-            return sizes[cast<AffineDimExpr>(dimExpr).getPosition()];
-          }));
-
-      double largestDbl = 240;
-
-      // We normalize p from [0, max] to [0, fp8.max] to guarantee we
-      // use the full `fp8` range, then renormlize post Softmax@V matmul
-      // to correct.
-      pScale = b.create<arith::ConstantOp>(
-          loc, b.getFloatAttr(elementType, clAttentionSoftmaxMax / largestDbl));
-
-      // Compute the pre matmul scale to handle fp8 quantization:
-      Value pScaleInv = b.create<arith::ConstantOp>(
-          loc, b.getFloatAttr(elementType, largestDbl / clAttentionSoftmaxMax));
-
-      AffineMap scaleMap = AffineMap::get(/*dimCount=*/maxMap.getNumInputs(),
-                                          /*symbolCount=*/0, getContext());
-      p = scaleValueInPlace(b, loc, pMap, scaleMap, p, pScaleInv);
-    }
-
     Value convertP = b.create<tensor::EmptyOp>(loc, sSizes, vETy);
     p = truncateFloat(b, loc, pMap, pMap, p, convertP);
   }
