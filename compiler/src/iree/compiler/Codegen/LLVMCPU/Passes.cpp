@@ -382,7 +382,8 @@ void addMultiTilingExpertPassPipeline(OpPassManager &funcPassManager,
         // SplitReductionPass takes care of banked-tiling.
         funcPassManager.addPass(
             createLLVMCPUSplitReductionPass(clEnableReassociateFpReductions));
-        funcPassManager.addPass(createLLVMCPUTilePass(i));
+        funcPassManager.addPass(
+            createLLVMCPUTileReductionAndFuseInputOperandsPass(i));
         continue;
       }
 
@@ -446,11 +447,13 @@ void addConvTileAndDecomposeExpertPassPipeline(
 
   funcPassManager.addPass(createLLVMCPUTileAndFusePass(
       tilingConfig.getVectorCommonParallelLevel()));
+  funcPassManager.addPass(createLLVMCPUTileReductionAndFuseInputOperandsPass(
+      tilingConfig.getVectorReductionLevel()));
   funcPassManager.addPass(createFuseTensorPadWithConsumerPass());
   funcPassManager.addPass(createConcretizePadResultShapePass());
 
-  funcPassManager.addPass(
-      createLLVMCPUTilePass(tilingConfig.getVectorReductionLevel()));
+  funcPassManager.addPass(createLLVMCPUTileReductionAndFuseInputOperandsPass(
+      tilingConfig.getVectorReductionLevel()));
   funcPassManager.addPass(
       createLLVMCPUTileAndFusePass(tilingConfig.getVectorInnerParallelLevel()));
   funcPassManager.addPass(createDecomposeConvolutionToLowerDimOpsPass());
@@ -507,7 +510,7 @@ void addMmt4dTilingExpertPassPipeline(OpPassManager &funcPassManager,
   funcPassManager.addPass(createCPUPrepareUkernelsPass());
   funcPassManager.addPass(
       createCPULowerToUKernelsPass(clSkipIntermediateRoundings));
-  funcPassManager.addPass(createLLVMCPUTilePass(
+  funcPassManager.addPass(createLLVMCPUTileReductionAndFuseInputOperandsPass(
       static_cast<int64_t>(tilingConfig.getVectorReductionLevel())));
 
   {
@@ -593,8 +596,8 @@ void addCPULinalgExtTileAndVectorizePipeline(
   // for AttentionOp.
   funcPassManager.addPass(
       IREE::LinalgExt::createConvertAttentionToOnlineAttentionPass());
-  funcPassManager.addPass(
-      createLLVMCPUTilePass(tilingConfig.getVectorReductionLevel()));
+  funcPassManager.addPass(createLLVMCPUTileReductionAndFuseInputOperandsPass(
+      tilingConfig.getVectorReductionLevel()));
   funcPassManager.addPass(
       IREE::LinalgExt::createDecomposeWinogradTransformPass());
   funcPassManager.addPass(IREE::LinalgExt::createDecomposeAttentionPass());

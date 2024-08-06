@@ -79,6 +79,10 @@ createLLVMCPU2DScalableTo1DScalablePass();
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createLLVMCPUTilePass(int64_t tilingLevel = -1);
 
+/// Pass to tile TilingInterface ops with given tilingLevel.
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createLLVMCPUTileReductionAndFuseInputOperandsPass(int64_t tilingLevel = -1);
+
 /// Replaces llvm.intr.fma with its unfused mul and add ops.
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createLLVMCPUUnfuseFMAOpsPass();
