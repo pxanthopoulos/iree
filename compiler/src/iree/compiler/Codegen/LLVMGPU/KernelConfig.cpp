@@ -684,10 +684,8 @@ setAttentionVectorDistributionConfig(IREE::GPU::TargetAttr target,
                              /*rhsType=*/vElementType,
                              /*accType=*/f32Type};
 
-  // TODO: Currently, we are forcing number of subgroups to be 1. This can be
-  // fixed by teaching vector distribution chained matmul.
-  GPUMMAHeuristicSeeds seeds = {/*bestSubgroupCountPerWorkgroup=*/1,
-                                /*bestMNTileCountPerSubgroup=*/8,
+  GPUMMAHeuristicSeeds seeds = {/*bestSubgroupCountPerWorkgroup=*/4,
+                                /*bestMNTileCountPerSubgroup=*/4,
                                 /*bestKTileCountPerSubgroup=*/4};
 
   LDBG("Attention Vector Distribution Config");
@@ -721,6 +719,16 @@ setAttentionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   if (!schedule) {
     LDBG("Failed to deduce Attention schedule");
     return failure();
+  }
+
+  // TODO: Due to some tech-debt with layout analysis, we cannot distribute
+  // subgroups on N dimension.
+  // For now, we force subgroup distribution only on M dimension. For most
+  // attention variants, this is enough. The M dimension is large, and exists in
+  // both matmuls, while the N dimension only exists in the second matmul.
+  if (schedule->nWarpCount != 1) {
+    schedule->nTileCount *= schedule->nWarpCount;
+    schedule->nWarpCount = 1;
   }
 
   LDBG("Target Subgroup size: " << targetSubgroupSize);
