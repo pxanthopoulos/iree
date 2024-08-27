@@ -310,6 +310,7 @@ util.func public @cmdCall(%arg0: !stream.resource<external>, %arg1: i32, %arg2: 
     // CHECK-SAME: (!hal.command_buffer, !hal.buffer, index, index, i32, !hal.buffer, index, index, !custom.type, !hal.buffer, index, index) -> ()
     stream.cmd.call @cmdFunc(ro %stream0[%c0 for %size0], %arg1, rw %stream1[%c0 for %size1], %arg3, wo %stream2[%c0 for %size2]) : (!stream.resource<external>{%size0}, i32, !stream.resource<external>{%size1}, !custom.type, !stream.resource<external>{%size2}) -> ()
   } => !stream.timepoint
+  // CHECK-NOT: hal.device.execute.indirect
   util.return %timepoint : !stream.timepoint
 }
 

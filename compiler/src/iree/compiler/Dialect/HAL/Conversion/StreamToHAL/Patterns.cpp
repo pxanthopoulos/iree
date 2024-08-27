@@ -27,7 +27,7 @@ static llvm::cl::opt<bool> clIndirectCommandBuffers{
     "iree-hal-indirect-command-buffers",
     llvm::cl::desc("Whether to turn buffer bindings into indirect references "
                    "when recording command buffers."),
-    llvm::cl::init(false),
+    llvm::cl::init(true),
 };
 
 struct ContextResolveOpPattern
@@ -921,7 +921,6 @@ struct CmdExecuteOpPattern
       bindingTable = BindingTable(executeOp, adaptor.getResourceOperands(),
                                   adaptor.getResourceOperandSizes(), indexSet);
     }
-    auto bindingTableValues = llvm::to_vector(bindingTable.getValues());
 
     // If the execute op is one-shot or there's no indirect bindings then mark
     // the command buffer one-shot.
@@ -933,7 +932,11 @@ struct CmdExecuteOpPattern
         modes =
             modes | IREE::HAL::CommandBufferModeBitfield::AllowInlineExecution;
       }
+      bindingTable = {};
     }
+
+    // Cache the binding table values for use with the indirect execute.
+    auto bindingTableValues = llvm::to_vector(bindingTable.getValues());
 
     // Derive the command buffer type based on the kind of operations present.
     // This can help the submission get routed to appropriate hardware queues
