@@ -417,8 +417,10 @@ partitionRegionConcurrencyReference(IREE::Stream::PartitioningConfigAttr config,
     // dependency chain down the use-def chain to a wave.
     for (auto user : op.getUsers()) {
       auto userInfoIt = opInfos.find(user);
-      if (userInfoIt == opInfos.end())
+      if (userInfoIt == opInfos.end()) {
+        LLVM_DEBUG({ llvm::dbgs() << "User info not found.\n"; });
         continue;
+      }
       auto &userInfo = userInfoIt->second;
       LLVM_DEBUG({
         llvm::dbgs() << "Testing user:\n";
@@ -436,6 +438,8 @@ partitionRegionConcurrencyReference(IREE::Stream::PartitioningConfigAttr config,
       if (hazardPresent) {
         // Hazard with existing op usage - prevent concurrent scheduling.
         opInfo.hazards |= userInfo.membership;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "  $ hazard analysis says NOT ok to schedule\n");
       } else {
         LLVM_DEBUG(llvm::dbgs() << "  $ hazard analysis says ok to schedule\n");
       }
@@ -447,9 +451,19 @@ partitionRegionConcurrencyReference(IREE::Stream::PartitioningConfigAttr config,
     // For each resource operand of this op we scan back through previously
     // created waves to see if there are any partitioned ops that have a hazard.
     for (auto operand : op.getOperands()) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "Testing operand: \n";
+        operand.print(llvm::dbgs(), *asmState);
+        llvm::dbgs() << "\n";
+      });
       if (!isa<IREE::Stream::ResourceType>(operand.getType()))
         continue;
       for (auto user : operand.getUsers()) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "Testing user of operand:\n";
+          user->print(llvm::dbgs(), *asmState);
+          llvm::dbgs() << "\n";
+        });
         if (user == &op || user->getBlock() != block ||
             user->isBeforeInBlock(&op))
           continue;

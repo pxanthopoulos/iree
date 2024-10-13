@@ -614,7 +614,14 @@ fuseRootsWithConsumers(MLIRContext *context, ArrayRef<Operation *> roots,
                        DominanceInfo const &dominanceInfo,
                        FormDispatchRegionsPassOptions const &options) {
   // Fuse with consumers where possible.
+  if (!roots.empty())
+    LLVM_DEBUG({ llvm::dbgs() << "\nFusing with consumers\n"; });
   for (Operation *root : roots) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "\nOn root: \n";
+      root->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n";
+    });
     SmallVector<Operation *> workList;
     llvm::SmallBitVector rootOuterParallelLoops = getOuterParallelLoops(root);
     workList.push_back(root);
@@ -622,6 +629,11 @@ fuseRootsWithConsumers(MLIRContext *context, ArrayRef<Operation *> roots,
       Operation *currRoot = workList.pop_back_val();
       assert(hasRootOpAttribute(currRoot) &&
              "unexpected non-root op in worklist");
+      LLVM_DEBUG({
+        llvm::dbgs() << "\nCurrent root: ~~~~ ";
+        currRoot->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+        llvm::dbgs() << "\n";
+      });
 
       // Helper function to make the consumer the root instead of the producer
       // when they are to be fused.
@@ -635,20 +647,54 @@ fuseRootsWithConsumers(MLIRContext *context, ArrayRef<Operation *> roots,
       std::optional<OpOperand *> fusableUse =
           getFusableUse(currRoot, dominanceInfo,
                         /*aggressiveFusion=*/options.aggressiveFusion);
-      if (!fusableUse)
+      if (!fusableUse) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "Skipped operand because root has no fusable use\n";
+        });
         continue;
+      }
 
       // Analyse the use to see if it is fusable.
       Operation *consumerOp = fusableUse.value()->getOwner();
+      LLVM_DEBUG({
+        llvm::dbgs() << "Consumer is: ---- ";
+        consumerOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+        llvm::dbgs() << "\n";
+      });
       if (hasRootOpAttribute(consumerOp) ||
           hasFusionGroupsAttribute(consumerOp)) {
+        if (hasRootOpAttribute(consumerOp))
+          LLVM_DEBUG(
+              {
+                llvm::dbgs()
+                    << "Skipped current root because consumer is a root op\n";
+              });
+        if (hasFusionGroupsAttribute(consumerOp))
+          LLVM_DEBUG({
+            llvm::dbgs() << "Skipped current root because it already belongs "
+                            "to a fusion group\n";
+          });
         continue;
       }
 
       if (isFusableWithConsumer(*(fusableUse.value()), rootOuterParallelLoops,
                                 options)) {
         updateRootTo(consumerOp);
+        LLVM_DEBUG({
+          llvm::dbgs() << "Current root added to fusion group, new root of "
+                          "fusion group is the consumer\n";
+        });
         workList.push_back(consumerOp);
+      } else {
+        Operation *producer = fusableUse.value()->get().getDefiningOp();
+        Operation *consumer = fusableUse.value()->getOwner();
+        LLVM_DEBUG({
+          llvm::dbgs() << "Skipped current root because producer (";
+          producer->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << ") and consumer (";
+          consumer->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << ") of fusable use cant be fused\n";
+        });
       }
     }
   }
@@ -727,25 +773,83 @@ fuseRootsWithProducers(MLIRContext *context, Operation *root, unsigned groupNum,
   llvm::SmallBitVector rootOuterParallelLoops = getOuterParallelLoops(root);
   while (!worklist.empty()) {
     Operation *candidate = worklist.pop_back_val();
+    LLVM_DEBUG({
+      llvm::dbgs() << "Op candidate: ~~~~ ";
+      candidate->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n";
+    });
     for (OpOperand &operand : candidate->getOpOperands()) {
       Operation *producer = operand.get().getDefiningOp();
-      if (!producer)
+      if (!producer) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "No producer for operand"
+                       << operand.getOperandNumber() << "\n";
+        });
         continue;
+      }
+      LLVM_DEBUG({
+        llvm::dbgs() << "Producer of operand " << operand.getOperandNumber()
+                     << ": ---- ";
+        producer->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+        llvm::dbgs() << "\n";
+      });
       if (IREE::Flow::isClonableIntoDispatchOp(producer) ||
           hasFusionGroupsAttribute(producer) || hasRootOpAttribute(producer)) {
+        if (IREE::Flow::isClonableIntoDispatchOp(producer))
+          LLVM_DEBUG({
+            llvm::dbgs() << "Skipped operand because producer is clonable "
+                            "into dispatchOp\n";
+          });
+        if (hasFusionGroupsAttribute(producer))
+          LLVM_DEBUG(
+              {
+                llvm::dbgs()
+                    << "Skipped operand because producer already belongs to a "
+                       "fusion group\n";
+              });
+        if (hasRootOpAttribute(producer))
+          LLVM_DEBUG({
+            llvm::dbgs() << "Skipped operand because producer is a root op\n";
+          });
         continue;
       }
 
       std::optional<OpOperand *> fusableUse =
           getFusableUse(producer, dominanceInfo,
                         /*aggressiveFusion=*/options.aggressiveFusion);
-      if (!fusableUse || fusableUse.value()->getOwner() != candidate)
-        continue;
-
-      if (!isFusableWithProducer(operand, rootOuterParallelLoops, options)) {
+      if (!fusableUse || fusableUse.value()->getOwner() != candidate) {
+        if (!fusableUse)
+          LLVM_DEBUG(
+              {
+                llvm::dbgs()
+                    << "Skipped operand because producer has no fusable use\n";
+              });
+        else if (fusableUse.value()->getOwner() != candidate)
+          LLVM_DEBUG({
+            llvm::dbgs() << "Skipped operand because producers fusable use ("
+                         << fusableUse.value()->getOperandNumber()
+                         << ") is "
+                            "not owned by candidate\n";
+          });
         continue;
       }
 
+      if (!isFusableWithProducer(operand, rootOuterParallelLoops, options)) {
+        Operation *producer = operand.get().getDefiningOp();
+        Operation *consumer = operand.getOwner();
+        LLVM_DEBUG({
+          llvm::dbgs() << "Skipped operand because operands producer (";
+          producer->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << ") and consumer (";
+          consumer->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << ") cant be fused\n";
+        });
+        continue;
+      }
+
+      LLVM_DEBUG({
+        llvm::dbgs() << "Producer added to fusion group " << groupNum << "\n";
+      });
       appendToFusionGroup(producer, groupNum);
       worklist.push_back(producer);
     }
@@ -781,12 +885,27 @@ decideFusableLinalgOps(Region &region, DominanceInfo const &dominanceInfo,
         }
         continue;
       }
-
+      LLVM_DEBUG({
+        llvm::dbgs() << "\n\nOn op: \n";
+        op.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+        llvm::dbgs() << "\n";
+      });
       // Start with a root operation and fuse its producers.
-      if (hasFusionGroupsAttribute(&op) || !isRootOp(&op))
+      if (hasFusionGroupsAttribute(&op) || !isRootOp(&op)) {
+        if (hasFusionGroupsAttribute(&op))
+          LLVM_DEBUG(
+              {
+                llvm::dbgs()
+                    << "Skipping because op is already in a fusion group...\n";
+              });
+        else
+          LLVM_DEBUG(
+              { llvm::dbgs() << "Skipping because op is not root...\n"; });
         continue;
+      }
       unsigned newGroup = numRootOps++;
       setRootAttribute(context, &op, newGroup);
+      LLVM_DEBUG({ llvm::dbgs() << "Op is root. Fusing with producers\n"; });
 
       fuseRootsWithProducers(context, &op, newGroup, dominanceInfo, options);
       roots.push_back(&op);
@@ -814,7 +933,11 @@ decideFusableLinalgOps(Region &region, DominanceInfo const &dominanceInfo,
           IREE::LinalgExt::isGatherlikeOp(&op)) {
         continue;
       }
-
+      LLVM_DEBUG({
+        llvm::dbgs() << "WARNING: Op not skipped:\n";
+        op.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+        llvm::dbgs() << "\n";
+      });
       unsigned newGroup = numRootOps++;
       setRootAttribute(context, &op, newGroup);
 
@@ -860,6 +983,9 @@ createFusionGroups(TensorDimTrackingRewriter &rewriter,
     }
     if (hasFusionGroupsAttribute(op)) {
       assert(getFusionGroups(op).size() == 1 && "expected exactly one group");
+      // Through fusing with consumers, root attribute was pushed down towards
+      // the consumers, so every Op in the group is now a producer concerning
+      // the root
       producers[getFusionGroups(op).front()].push_back(op);
       removeFusionGroupsAttribute(op);
     }
@@ -917,11 +1043,11 @@ createFusionGroups(TensorDimTrackingRewriter &rewriter,
     regionOps.push_back(regionOp);
   }
 
-  LLVM_DEBUG({
-    llvm::dbgs() << "\n--- After creating flow.dispatch.region ---\n";
-    funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
-    llvm::dbgs() << "\n\n";
-  });
+  // LLVM_DEBUG({
+  //   llvm::dbgs() << "\n--- After creating flow.dispatch.region ---\n";
+  //   funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+  //   llvm::dbgs() << "\n\n";
+  // });
 
   return success();
 }

@@ -181,6 +181,10 @@ struct ScheduleConcurrencyPass
     : public IREE::Stream::impl::ScheduleConcurrencyPassBase<
           ScheduleConcurrencyPass> {
   void runOnOperation() override {
+    LLVM_DEBUG({
+      llvm::dbgs() << "~~~~~~~~~~~~~~~~~~~~~~NEW "
+                      "RUN (schedule concurrency)~~~~~~~~~~~~~~~~~~~~~~\n\n";
+    });
     auto parentOp = getOperation();
     if (!parentOp.getCallableRegion() ||
         parentOp.getCallableRegion()->empty()) {
@@ -191,6 +195,11 @@ struct ScheduleConcurrencyPass
       if (failed(runOnRegion(executeOp)))
         return signalPassFailure();
     }
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+             "~~~~~~~~~~~~~~~~~~\n";
+    });
   }
 
   LogicalResult runOnRegion(IREE::Stream::AsyncExecuteOp parentOp) {
@@ -198,9 +207,16 @@ struct ScheduleConcurrencyPass
       return success();
     }
     auto *block = &parentOp.getBody().front();
+    LLVM_DEBUG({
+      llvm::dbgs() << "\nBefore:\n";
+      block->dump();
+      llvm::dbgs() << "\n";
+    });
 
     // Lookup the optional config used to control partitioning.
     auto configAttr = IREE::Stream::PartitioningConfigAttr::lookup(parentOp);
+
+    LLVM_DEBUG({ llvm::dbgs() << "Wave Information: BEGIN\n\n"; });
 
     // Compute a set of partitions covering all of the streamable ops in the
     // execution region.
@@ -209,6 +225,8 @@ struct ScheduleConcurrencyPass
       return success();
     if (failed(waveSet.verify(parentOp.getLoc())))
       return failure();
+
+    LLVM_DEBUG({ llvm::dbgs() << "\nWave Information: END\n\n"; });
 
     // Create partition builders for each partition.
     // We'll clone ops into each and insert them into the block at the
@@ -268,6 +286,7 @@ struct ScheduleConcurrencyPass
     LLVM_DEBUG({
       llvm::dbgs() << "\nWaves constructed:\n";
       block->dump();
+      llvm::dbgs() << "\n\n";
     });
     return success();
   }

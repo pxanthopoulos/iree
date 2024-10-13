@@ -201,15 +201,25 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
     opOrdering[&op] = opOrdering.size();
   }
 
+  LLVM_DEBUG({ llvm::dbgs() << "--- --- Tracking return values:\n"; });
   // Liveness doesn't track return values as live-outs so we do that here.
   SmallPtrSet<Value, 16> liveOuts;
   auto yieldOp = cast<IREE::Stream::YieldOp>(streamBlock->back());
   for (auto returnValue : yieldOp.getResourceOperands()) {
     if (!llvm::isa<IREE::Stream::ResourceType>(returnValue.getType()))
       continue;
+    LLVM_DEBUG({
+      llvm::dbgs() << "\nReturn Value: ";
+      AsmState asmState(executeOp->getParentOp());
+      returnValue.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n";
+    });
     liveOuts.insert(returnValue);
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- --- Computing LIVE-IN intervals (arguments):\n";
+  });
   // Compute live-in intervals by hand as we won't catch them in the op walk
   // below since they are block arguments.
   LivenessIntervalMap valueIntervals;
@@ -225,15 +235,42 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
       auto *endOp = livenessInfo->getEndOperation(value, &streamBlock->front());
       interval.end = opOrdering[endOp];
     }
+    LLVM_DEBUG({
+      llvm::dbgs() << "\nArgument: ";
+      AsmState asmState(executeOp->getParentOp());
+      value.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << " with lifetime: [" << interval.start << ","
+                   << interval.end << "]\nIn op: ";
+      livenessInfo->getEndOperation(value, &streamBlock->front())
+          ->print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n";
+    });
     interval.value = value;
     interval.ordinal = ++ordinal;
     valueIntervals[value] = interval;
   }
 
   // Compute ranges for all values independently (ignoring aliasing).
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "\n--- --- Computing lifetimes for all values (walk IR "
+           "forwards):\nFor each SSA value (result): start-time = current "
+           "time, "
+           "end time = max(current time, index of all susequent uses):\n";
+  });
   for (auto &op : *streamBlock) {
     int start = opOrdering[&op];
+    LLVM_DEBUG({
+      llvm::dbgs() << "\nIn op: ";
+      AsmState asmState(executeOp->getParentOp());
+      op.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n";
+    });
     if (auto concurrentOp = dyn_cast<IREE::Stream::AsyncConcurrentOp>(op)) {
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "In concurrent op, all SSAs here get the same lifetime\n";
+      });
       // HACK: allocation planning currently only works on the top-level
       // execute op but sometimes we need to allocate locals inside of
       // concurrent regions. The real fix here is to make allocation planning
@@ -246,12 +283,22 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
             continue;
           if (!value.use_empty())
             continue;
+
           LivenessInterval interval;
           interval.start = start;
           interval.end = start;
           interval.value = value;
           interval.ordinal = -1;
           valueIntervals[value] = interval;
+          LLVM_DEBUG({
+            llvm::dbgs() << "Value: ";
+            AsmState asmState(executeOp->getParentOp());
+            value.printAsOperand(llvm::dbgs(), asmState);
+            llvm::dbgs() << " with lifetime: [" << interval.start << ","
+                         << interval.end << "]\nIn op: ";
+            op->print(llvm::dbgs(), asmState);
+            llvm::dbgs() << "\n";
+          });
         }
       });
     }
@@ -271,9 +318,19 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
       interval.value = value;
       interval.ordinal = ++ordinal;
       valueIntervals[value] = interval;
+      LLVM_DEBUG({
+        llvm::dbgs() << "Value: ";
+        AsmState asmState(executeOp->getParentOp());
+        value.printAsOperand(llvm::dbgs(), asmState);
+        llvm::dbgs() << " with lifetime: [" << interval.start << ","
+                     << interval.end << "]\n";
+      });
     }
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- --- Computing lifetimes for aliased values:\n";
+  });
   // Walk the alias set and union intervals and propagate back.
   for (auto &aliasSet : valueAliases.getValueAliasSets()) {
 
@@ -292,6 +349,24 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
             llvm::none_of(aliasSet, isNested)) &&
            "nested values can't alias values in the current scope");
 
+    LLVM_DEBUG({
+      auto repr = aliasSet.front();
+      llvm::dbgs() << "\nIn alias set with representative: ";
+      AsmState asmState(executeOp->getParentOp());
+      repr.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nIn op: ";
+      repr.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nAnd aliasers:\n";
+      auto aliasers = ArrayRef(aliasSet).drop_front(1);
+      for (Value aliaser : aliasers) {
+        llvm::dbgs() << "=== ";
+        aliaser.printAsOperand(llvm::dbgs(), asmState);
+        llvm::dbgs() << "\n=== In op: ";
+        aliaser.print(llvm::dbgs(), asmState);
+        llvm::dbgs() << "\n";
+      }
+    });
+
     auto &aliaseeInterval = valueIntervals[aliasSet.front()];
     int start = aliaseeInterval.start;
     int end = aliaseeInterval.end;
@@ -302,6 +377,11 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
       start = std::min(start, aliaserInterval.start);
       end = std::max(end, aliaserInterval.end);
     }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "Broadest interval: [" << start << "," << end
+                   << "], propagating to all alias set members\n";
+    });
 
     // Propagate interval back to all values in the aliasing set.
     for (Value aliaser : aliasSet) {
@@ -1033,23 +1113,42 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
   SmallVector<Value> transientValues;
   SmallVector<int64_t> lifetimeIntervals;
   SmallVector<Value> dynamicSliceSizes;
+  LLVM_DEBUG({ llvm::dbgs() << "--- Computing liveness intervals:\n\n"; });
   auto livenessIntervals = computeExecutionRegionLivenessIntervals(
       executeOp, scope.getValueAliases());
+  LLVM_DEBUG(
+      { llvm::dbgs() << "\n--- Iterating over liveness intervals:\n\n"; });
   for (auto valueInterval : livenessIntervals) {
     auto value = valueInterval.value;
     assert(value && "must have value for interval");
+    LLVM_DEBUG({
+      llvm::dbgs() << "On interval: \nValue as operand: ";
+      AsmState asmState(executeOp->getParentOp());
+      value.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nValue in op: ";
+      value.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nLifetime: [" << valueInterval.start << ","
+                   << valueInterval.end << "]\n";
+    });
     auto valueType =
         llvm::dyn_cast<IREE::Stream::ResourceType>(value.getType());
-    if (!valueType)
+    if (!valueType) {
+      LLVM_DEBUG(
+          { llvm::dbgs() << "Skipping because value is not a resource\n\n"; });
       continue;
+    }
 
     // Only handle transient buffers (created/used/dropped within the stream).
     if (valueInterval.start == LIVE_IN || valueInterval.end == LIVE_OUT) {
+      LLVM_DEBUG(
+          { llvm::dbgs() << "Skipping because value is not local\n\n"; });
       continue;
     }
 
     // Ignore covered values.
     if (scope.hasResourceRange(value) || coveredValues.contains(value)) {
+      LLVM_DEBUG(
+          { llvm::dbgs() << "Skipping because value is already covered\n\n"; });
       continue;
     }
 
@@ -1067,6 +1166,12 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
     // Mark as covered so we don't allocate it again.
     scope.forEachResourceAlias(
         value, [&](Value alias) { coveredValues.insert(alias); });
+    LLVM_DEBUG({
+      AsmState asmState(executeOp->getParentOp());
+      llvm::dbgs() << "Interval & value stored for allocation (size: ";
+      allocationSize.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << ") and marked as covered\n\n";
+    });
   }
   if (transientValues.empty()) {
     // No transients required.
@@ -1098,6 +1203,10 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
       allocation.reservation.getType(), allocation.reservation.getLoc());
 
   // Map values to their ranges within the slab.
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "--- Mapping transients to memory regions within the slab\n";
+  });
   auto asmState = getRootAsmState(executeOp->getParentOp());
   for (size_t i = 0; i < transientValues.size(); ++i) {
     auto value = transientValues[i];
@@ -1211,10 +1320,22 @@ extractConstants(IREE::Stream::AsyncExecuteOp executeOp,
   if (auto allocation = extractConstantsWithLifetime(
           executeOp, IREE::Stream::Lifetime::Constant, externalBuilder)) {
     allocations.push_back(std::move(allocation).value());
+    LLVM_DEBUG({
+      llvm::dbgs() << "Extracted constants with `constant` lifetime:\n";
+      allocation->constantsOp.print(llvm::dbgs(),
+                                    OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n\n";
+    });
   }
   if (auto allocation = extractConstantsWithLifetime(
           executeOp, IREE::Stream::Lifetime::Variable, externalBuilder)) {
     allocations.push_back(std::move(allocation).value());
+    LLVM_DEBUG({
+      llvm::dbgs() << "Extracted constants with `variable` lifetime:\n";
+      allocation->constantsOp.print(llvm::dbgs(),
+                                    OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n\n";
+    });
   }
   return allocations;
 }
@@ -1386,7 +1507,7 @@ static bool isExecutedOnce(Operation *op) {
 // |executeOp| region. IR will be inserted around the op in its parent block.
 static LogicalResult
 allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
-  LLVM_DEBUG(llvm::dbgs() << "[[ Allocating execution region ]]\n");
+  LLVM_DEBUG(llvm::dbgs() << "[[ Allocating execution region ]]\n\n");
 
   AllocationScope scope(executeOp);
 
@@ -1420,9 +1541,21 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
   // op. We'll then capture the result and use that to initialize variables and
   // constants within the region. Note that this removes ops from the region and
   // as such we want to run it first before we go allocate transients.
+  LLVM_DEBUG({ llvm::dbgs() << "@@@ Extracting constants:\n\n"; });
   auto constantAllocations = extractConstants(executeOp, externalBuilder);
   for (auto &constantAllocation : constantAllocations) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "On constants op:\n";
+      constantAllocation.constantsOp.print(llvm::dbgs(),
+                                           OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n\n";
+    });
     bool anyCaptured = false;
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "@@@ Checking if reservations (results of original op) are "
+             "captured inside the execute region:\n\n";
+    });
     for (auto &reservation : constantAllocation.reservations) {
       if (reservation.capturedArg) {
         newOperands.push_back(reservation.resource);
@@ -1431,7 +1564,7 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
       }
       LLVM_DEBUG({
         AsmState asmState(executeOp->getParentOp());
-        llvm::dbgs() << "    ";
+        llvm::dbgs() << "  ";
         reservation.resource.printAsOperand(llvm::dbgs(), asmState);
         llvm::dbgs() << "{";
         reservation.resourceSize.printAsOperand(llvm::dbgs(), asmState);
@@ -1439,10 +1572,18 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
         if (reservation.capturedArg) {
           llvm::dbgs() << " captured as ";
           reservation.capturedArg.printAsOperand(llvm::dbgs(), asmState);
+        } else {
+          llvm::dbgs() << " not captured inside the execute region";
         }
         llvm::dbgs() << "\n";
       });
     }
+
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "\n@@@ Adding timepoints for inside consumers and outside "
+             "consumers of constants:\n\n";
+    });
 
     auto awaitTimepoint = constantAllocation.constantsOp.getResultTimepoint();
     if (anyCaptured) {
@@ -1476,6 +1617,12 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
       });
     }
 
+    LLVM_DEBUG({
+      llvm::dbgs() << "\n@@@ Replacing outside uses of escaping uploads of "
+                      "constants (uses of yielded values) with "
+                      "new values:\n\n";
+    });
+
     // Replace results of escaping uploads with the upload values.
     for (auto &reservation : constantAllocation.reservations) {
       auto result = findTiedYieldResult(reservation.constantOp.getResult());
@@ -1494,11 +1641,27 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
     }
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n@@@ New IR after constant handling:\n";
+    executeOp->getBlock()->dump();
+    llvm::dbgs() << "\n";
+  });
+
   // Compute an updated set of operands/results. After allocation all results
   // must be tied to operands; it's possible though that this is already the
   // case by construction.
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n@@@ Tying operands to arguments and mapping arguments "
+                    "to a memory region:\n\n";
+  });
   auto asmState = getRootAsmState(executeOp->getParentOp());
   for (auto operand : llvm::enumerate(executeOp.getResourceOperands())) {
+    LLVM_DEBUG({
+      AsmState asmState(executeOp->getParentOp());
+      llvm::dbgs() << "Resource operand: ";
+      operand.value().printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n";
+    });
     unsigned operandIdx =
         executeOp.getTiedOperandsIndexAndLength().first + operand.index();
     auto operandSize = executeOp.getOperandSize(operandIdx);
@@ -1513,12 +1676,28 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
     });
     auto resourceRange = ResourceRange(arg, operandSize);
     scope.mapResourceRange(arg, resourceRange, asmState.get());
+    LLVM_DEBUG({ llvm::dbgs() << "\n"; });
   }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n@@@ Tying results to operands and mapping them to "
+                    "memory regions:\n\n";
+  });
   SmallVector<ResultReservation> resultReservations;
   for (auto [result, resultSize] :
        llvm::zip_equal(executeOp.getResults(), executeOp.getResultSizes())) {
     auto resultType = llvm::cast<IREE::Stream::ResourceType>(result.getType());
+    LLVM_DEBUG({
+      AsmState asmState(executeOp->getParentOp());
+      llvm::dbgs() << "On result: ";
+      result.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n";
+    });
     if (handledResults.contains(result)) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "Result is already handled (constant defined inside is "
+                        "pretied with corresponding result)\n\n";
+      });
       resultReplacements.push_back(std::make_pair(result, Value{}));
       continue;
     }
@@ -1530,6 +1709,10 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
     auto tiedOperandIndex =
         executeOp.getTiedResultOperandIndex(result.getResultNumber());
     if (tiedOperandIndex.has_value()) {
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "Result is already tied to an operand, just mapping\n\n";
+      });
       // Already tied; no need to modify just map.
       auto tiedOperand = executeOp.getOperand(tiedOperandIndex.value());
       LLVM_DEBUG({
@@ -1554,7 +1737,7 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
             subrange.offset.printAsOperand(llvm::dbgs(), asmState);
             llvm::dbgs() << " for ";
             subrange.length.printAsOperand(llvm::dbgs(), asmState);
-            llvm::dbgs() << "]\n";
+            llvm::dbgs() << "]\n\n";
           }
         }
       });
@@ -1590,7 +1773,7 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
         arg.printAsOperand(llvm::dbgs(), asmState);
         llvm::dbgs() << " = ";
         result.printAsOperand(llvm::dbgs(), asmState);
-        llvm::dbgs() << "\n";
+        llvm::dbgs() << "\n\n";
       });
       resultReplacements.push_back(std::make_pair(result, operand));
       continue;
@@ -1604,12 +1787,27 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
       AsmState asmState(executeOp->getParentOp());
       llvm::dbgs() << "  + queuing pending result reservation allocation for ";
       resultReservation.result.printAsOperand(llvm::dbgs(), asmState);
-      llvm::dbgs() << "\n";
+      llvm::dbgs() << "\n\n";
     });
     resultReservations.push_back(resultReservation);
   }
+
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "\n@@@ Allocating space for untied results, adding/tying them to "
+           "operands and updating memory mapping:\n\n";
+  });
   auto resultAllocation = reserveResultAllocation(resultReservations);
   for (auto &reservationSet : resultAllocation.reservationSets) {
+    LLVM_DEBUG({
+      AsmState asmState(executeOp->getParentOp());
+      llvm::dbgs() << "On reservation set with the following reservations:\n";
+      for (auto &reservation : reservationSet.reservations) {
+        reservation.result.printAsOperand(llvm::dbgs(), asmState);
+        llvm::dbgs() << ", ";
+      }
+      llvm::dbgs() << "\n";
+    });
     // Allocate and tie an operand to the result.
     auto timepointType = externalBuilder.getType<IREE::Stream::TimepointType>();
     auto [allocaOp, suballocations] =
@@ -1639,7 +1837,7 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
           entryBlock.addArgument(reservation.resultType, reservation.loc);
 
       LLVM_DEBUG({
-        llvm::dbgs() << "    + adding entry arg for reservation ";
+        llvm::dbgs() << "  + adding entry arg for reservation ";
         reservation.result.printAsOperand(llvm::dbgs(), *asmState);
         llvm::dbgs() << "{";
         reservation.resultSize.printAsOperand(llvm::dbgs(), *asmState);
@@ -1657,6 +1855,7 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
     }
   }
 
+  LLVM_DEBUG({ llvm::dbgs() << "\n\n@@@ Allocating local transients:\n\n"; });
   // Allocate local transients that are scoped entirely within the region.
   // All locals are packed into a single slab and reserved as one.
   // Note that not all regions need transients.
@@ -1686,6 +1885,13 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
     LLVM_DEBUG(llvm::dbgs() << "  - no local transients found\n");
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "\n\n@@@ New IR after handling inputs, outputs, transients:\n";
+    executeOp->getBlock()->dump();
+    llvm::dbgs() << "\n";
+  });
+
   // If we have any waits then we attach them to the execution region.
   OpBuilder executeBuilder(executeOp);
   Value newAwaitTimepoint;
@@ -1696,6 +1902,11 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
         executeOp.getLoc(), newAwaitTimepoints, executeBuilder);
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "\n@@@ Creating new execute op and replacing the old (along "
+           "with new yield op):\n";
+  });
   // Recreate the execution op with all the new arguments. Note that we drop
   // the results (besides the timepoint) as they are all aliased.
   auto newExecuteOp = executeBuilder.create<IREE::Stream::CmdExecuteOp>(
@@ -1725,11 +1936,21 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
   // Drop the operands on the yield op now that all are aliased.
   OpBuilder(yieldOp).create<IREE::Stream::YieldOp>(yieldOp.getLoc());
   yieldOp.erase();
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n\n@@@ New IR after replacing execute op and yield:\n";
+    newExecuteOp->getBlock()->dump();
+    llvm::dbgs() << "\n";
+  });
 
   // Apply mappings from the parent execute op into all waves; as we allocate
   // and convert to stream.cmd.concurrent we are removing all wave
   // operands/results and taking whatever we established above as the true
   // ranges.
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "\n@@@ Applying mappings from the parent execute op into all "
+           "waves (concurrent ops):\n";
+  });
   asmState = getRootAsmState(newExecuteOp->getParentOp());
   newExecuteOp.getBody().walk<WalkOrder::PreOrder>(
       [&](IREE::Stream::AsyncConcurrentOp concurrentOp) {
@@ -1764,6 +1985,8 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
         }
       });
 
+  LLVM_DEBUG(
+      { llvm::dbgs() << "\n\n@@@ Applying scope and converting ops:\n"; });
   // Apply the scope to the region and convert ops.
   if (failed(applyAsyncAllocations(newExecuteOp.getBody(), scope))) {
     return newExecuteOp.emitError()
@@ -1771,11 +1994,9 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
   }
 
   LLVM_DEBUG({
-    llvm::dbgs() << "Allocation of execution region complete:\n";
-    newExecuteOp.print(llvm::dbgs());
-    llvm::dbgs() << "\n";
+    llvm::dbgs() << "\n\n@@@ Inserting transient deallocations and joined "
+                    "waits on timepoints (for possible new timepoints):\n";
   });
-
   OpBuilder builder(newExecuteOp);
   builder.setInsertionPointAfter(newExecuteOp);
 
@@ -1806,6 +2027,12 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp) {
           return !executeTimepointUsers.contains(operand.getOwner());
         });
   }
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "\n\n@@@ Allocation of execution region complete, final IR:\n";
+    newExecuteOp->getBlock()->dump();
+    llvm::dbgs() << "\n";
+  });
 
   return success();
 }
@@ -1839,6 +2066,11 @@ struct ScheduleAllocationPass
     auto moduleOp = getOperation();
     for (auto &parentOp : llvm::make_early_inc_range(moduleOp.getOps())) {
       if (auto asyncFuncOp = dyn_cast<IREE::Stream::AsyncFuncOp>(parentOp)) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "Async Func Op to be transformed to Cmd Func Op:\n";
+          asyncFuncOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << "\n";
+        });
         convertAsyncFuncOp(asyncFuncOp);
         continue;
       }
@@ -1851,7 +2083,20 @@ struct ScheduleAllocationPass
       llvm::SmallVector<Operation *> operations;
       callableOp.walk([&](Operation *op) { operations.push_back(op); });
 
+      LLVM_DEBUG({
+        llvm::dbgs() << "Callable Op is:\n";
+        callableOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+        llvm::dbgs() << "\n\n\n";
+        llvm::dbgs() << "Iterating over the ops inside:\n\n";
+      });
+
       for (auto op : operations) {
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "Op is:\n";
+          op->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << "\n\n";
+        });
         if (failed(TypeSwitch<Operation *, LogicalResult>(op)
                        .Case([&](IREE::Stream::AsyncExecuteOp op) {
                          return allocateExecutionRegion(op);
@@ -1866,6 +2111,7 @@ struct ScheduleAllocationPass
           return signalPassFailure();
         }
       }
+      LLVM_DEBUG({ llvm::dbgs() << "\n\n"; });
     }
   }
 };

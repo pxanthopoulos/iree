@@ -95,13 +95,37 @@ static SmallVector<StorageResource> bucketValuesIntoStorageResources(
   SmallVector<StorageResource> storageBuffers;
   storageBuffers.push_back({UnknownLoc::get(resourceConfig.getContext())});
   StorageResource *currentBuffer = &storageBuffers.back();
+  LLVM_DEBUG(
+      { llvm::dbgs() << "--- --- Creating the first storage resource\n\n"; });
   for (auto slice : slices) {
+    LLVM_DEBUG({
+      AsmState asmState(slice.result.getDefiningOp()->getParentOp());
+      llvm::dbgs() << "--- --- On slice:\n\nResult SSA: ";
+      slice.result.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nResult SSA size: ";
+      slice.resultSize.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nValue: ";
+      slice.value.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nStorage size (not aligned): "
+                   << slice.getStorageSize();
+      llvm::dbgs() << "\n\n";
+    });
     uint64_t offset = IREE::Util::align(
         currentBuffer->totalSize, resourceConfig.getMinBufferOffsetAlignment());
     uint64_t unpaddedLength = slice.getStorageSize();
     uint64_t paddedLength = IREE::Util::align(
         unpaddedLength, resourceConfig.getMinBufferRangeAlignment());
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "--- --- --- Storage info:\n\nOffset inside storage resource: "
+          << offset << "\nUnpadded length:" << unpaddedLength
+          << ", padded length: " << paddedLength << "\n\n";
+    });
     if (offset + unpaddedLength > resourceConfig.getMaxAllocationSize()) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- --- --- Created new storage resource (exceeded "
+                        "max size)\n\n";
+      });
       // Spilling buffer; make a new one.
       storageBuffers.push_back({UnknownLoc::get(resourceConfig.getContext())});
       currentBuffer = &storageBuffers.back();
@@ -114,6 +138,33 @@ static SmallVector<StorageResource> bucketValuesIntoStorageResources(
   if (storageBuffers.back().spans.empty()) {
     storageBuffers.pop_back();
   }
+  LLVM_DEBUG({
+    llvm::dbgs() << "--- --- Created the following storage resources:\n\n";
+    for (const auto &p : llvm::enumerate(storageBuffers)) {
+      auto index = p.index();
+      auto value = p.value();
+      llvm::dbgs() << "Storage resource " << index << "\n";
+      llvm::dbgs() << "Total size: " << value.totalSize << "\n\n";
+      llvm::dbgs() << "Spans:\n\n";
+      for (const auto &span : llvm::enumerate(value.spans)) {
+        auto spanIndex = span.index();
+        auto spanValue = span.value();
+        AsmState asmState(
+            spanValue.slice.result.getDefiningOp()->getParentOp());
+        llvm::dbgs() << "Span " << spanIndex << "\n";
+        llvm::dbgs() << "Slice result SSA: ";
+        spanValue.slice.result.printAsOperand(llvm::dbgs(), asmState);
+        llvm::dbgs() << "\nSlice result SSA size: ";
+        spanValue.slice.resultSize.printAsOperand(llvm::dbgs(), asmState);
+        llvm::dbgs() << "\nValue: ";
+        spanValue.slice.value.print(llvm::dbgs(), asmState);
+        llvm::dbgs() << "\nStorage size (not aligned): "
+                     << spanValue.slice.getStorageSize();
+        llvm::dbgs() << "\nOffset: " << spanValue.offset
+                     << "\nLength: " << spanValue.length << "\n\n";
+      }
+    }
+  });
   return storageBuffers;
 }
 
@@ -148,9 +199,22 @@ static void packStorageResourceData(StorageResource &storageBuffer,
     if (constantSpan.length == 0)
       continue;
 
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- --- --- On span for SSA value: ";
+      AsmState asmState(
+          constantSpan.slice.result.getDefiningOp()->getParentOp());
+      constantSpan.slice.result.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n\n";
+    });
     int64_t start = constantSpan.offset;
     int64_t end = start + constantSpan.length;
-
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "--- --- --- Calculating start, end based on offset and length "
+             "inside storage resource\n--- --- --- Calculating span padding "
+             "from current blob offset and span start\n--- --- --- Saving "
+             "padding with actual space to the attribute vector\n\n";
+    });
     // TODO(benvanik): when we start overlapping data we'll want to have a way
     // to build subranges here by slicing out parts of the attributes we have
     // coming in. This could be done with a #util.slice<> attr or something
@@ -169,6 +233,11 @@ static void packStorageResourceData(StorageResource &storageBuffer,
     offset = end;
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "--- --- Adding all slice attributes and tail padding (if needed) "
+           "to the packed data attribute of the storage resource\n\n";
+  });
   // Add tail padding. Unfortunate but some implementations will require the
   // bytes and it's possible (and in some cases intentional) that the storage
   // buffers fall at the end of mapped memory and need the valid bytes for
@@ -182,6 +251,14 @@ static void packStorageResourceData(StorageResource &storageBuffer,
   }
 
   storageBuffer.packedData = IREE::Util::CompositeAttr::get(context, values);
+  LLVM_DEBUG({
+    llvm::dbgs()
+        << "--- --- Final storage resource packed data attribute: \n\n";
+    // AsmState
+    // asmState(constantSpan.slice.result.getDefiningOp()->getParentOp());
+    storageBuffer.packedData.dump();
+    llvm::dbgs() << "\n";
+  });
   assert(storageBuffer.packedData && "unable to build composite attr");
 }
 
@@ -225,11 +302,21 @@ computePackingMap(ArrayRef<ConstantSlice> slices,
   // just sticks to packing for that reason.
 
   // Build a list of resources and spans (append to current or spill to new).
+  LLVM_DEBUG(
+      { llvm::dbgs() << "--- Bucketing values into storage resources: \n\n"; });
   auto storageBuffers =
       bucketValuesIntoStorageResources(slices, resourceConfig);
 
   // Pack each storage resource bucket into a single data blob.
+  LLVM_DEBUG({
+    llvm::dbgs() << "--- Packing each storage resource into a single blob\n\n";
+  });
+  uint64_t counter = 0;
   for (auto &storageBuffer : storageBuffers) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- --- On storage resource " << counter << "\n\n";
+    });
+    counter++;
     packStorageResourceData(storageBuffer, context);
   }
 
@@ -459,6 +546,7 @@ static Value generateSerializedUpload(
     IREE::Stream::ResourceConfigAttr resourceConfig,
     ArrayRef<ConstantSlice> slices, IntegerSet<int64_t> &i64Set,
     IndexSet &indexSet, OpBuilder &builder) {
+  LLVM_DEBUG({ llvm::dbgs() << "\n@@@ Packing constants to storage: \n\n"; });
   // Perform the packing of dense values to compute the storage resources we
   // will need and where each value will be placed.
   auto storageResources =
@@ -468,7 +556,8 @@ static Value generateSerializedUpload(
 
   // TODO(benvanik): should be able to have a single buffer constant and
   // subrange it so that we don't need so many files.
-
+  LLVM_DEBUG(
+      { llvm::dbgs() << "\n@@@ Emitting IR for each storage resource: \n\n"; });
   auto anyResult = slices.front().result;
   auto resourceType =
       llvm::cast<IREE::Stream::ResourceType>(anyResult.getType());
@@ -477,33 +566,65 @@ static Value generateSerializedUpload(
   // As our upload paths may vary this ensures that we are only emitting
   // them once regardless of how many strategies we emit IR for.
   Value currentTimepoint = awaitTimepoint;
+  uint64_t counter = 0;
   for (auto &storageResource : storageResources) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- On storage resource " << counter << "\n\n";
+      counter++;
+    });
     // Serialized resources are stored as packed host data.
     Value storageBuffer = builder.create<IREE::Util::BufferConstantOp>(
         storageResource.loc, /*name=*/nullptr, storageResource.packedData,
         builder.getIndexAttr(resourceConfig.getMinBufferOffsetAlignment()),
         /*mimeType=*/nullptr);
-
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- Resulting constant op:\n";
+      storageBuffer.dump();
+      llvm::dbgs() << "\n\n";
+    });
     // If this is producing constants (vs variables) we can try to go on a
     // fast-path where we directly map the constant memory. If producing
     // variables then we always need to stage and clone.
     TimepointResource uploadedResource;
     auto resourceSize = indexSet.get(storageResource.totalSize);
     if (resourceType.getLifetime() == IREE::Stream::Lifetime::Constant) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- Slices are of `constant` lifetime, generating "
+                        "`try_map` with backup file read:\n\n";
+      });
       uploadedResource = buildTryMapConstantResource(
           storageResource.loc, currentTimepoint, affinityAttr, resourceType,
           resourceSize, storageBuffer, resourceSize, i64Set, indexSet, builder);
     } else {
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- Slices are not of `constant` lifetime, generating "
+                        "only file read:\n\n";
+      });
       uploadedResource = buildFileRead(
           storageResource.loc, currentTimepoint, affinityAttr, resourceType,
           resourceSize, storageBuffer, resourceSize, i64Set, indexSet, builder);
     }
-
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- Resulting op:\n\nSize: ";
+      uploadedResource.resourceSize.dump();
+      llvm::dbgs() << "Op:\n";
+      uploadedResource.resource.dump();
+      llvm::dbgs() << "\n";
+    });
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- Creating subviews for separate constants and "
+                      "replacing old uses with them:\n\n";
+    });
     for (auto &span : storageResource.spans) {
       auto loc = span.slice.result.getLoc();
       auto subviewOp = builder.create<IREE::Stream::ResourceSubviewOp>(
           loc, uploadedResource.resource, uploadedResource.resourceSize,
           indexSet.get(span.offset), span.slice.resultSize);
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- --- Resulting subview op:\n\n";
+        subviewOp.dump();
+        llvm::dbgs() << "\n";
+      });
       span.slice.result.replaceAllUsesWith(subviewOp.getResult());
     }
 
@@ -519,6 +640,9 @@ static Value generateParameterUpload(
     IREE::Stream::ResourceConfigAttr resourceConfig,
     ArrayRef<ConstantSlice> slices, IntegerSet<int64_t> &i64Set,
     IndexSet &indexSet, OpBuilder &builder) {
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n@@@ Packing parameters to storage: NO LOGGING YET\n\n";
+  });
   auto anyResult = slices.front().result;
   auto resourceType =
       llvm::cast<IREE::Stream::ResourceType>(anyResult.getType());
@@ -598,6 +722,10 @@ static Value generateUploads(Value awaitTimepoint,
                              IREE::Stream::ResourceConfigAttr resourceConfig,
                              IntegerSet<int64_t> &i64Set, IndexSet &indexSet,
                              OpBuilder &builder) {
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n@@@ Separating constants: Serialized data or external "
+                    "parameters \n\n";
+  });
   // Split the slices based on whether they are sourced from serialized data or
   // externally-defined parameters.
   // TODO(benvanik): remove stream.resource.constants and this coupling;
@@ -616,9 +744,23 @@ static Value generateUploads(Value awaitTimepoint,
     };
     if (isa<IREE::Stream::NamedParameterAttr>(value)) {
       parameterSlices.push_back(slice);
+      LLVM_DEBUG({ llvm::dbgs() << "Found parameter slice: \n"; });
     } else {
       serializedSlices.push_back(slice);
+      LLVM_DEBUG({ llvm::dbgs() << "Found serialized slice: \n"; });
     }
+    LLVM_DEBUG({
+      AsmState asmState(constantsOp->getParentOp());
+      llvm::dbgs() << "Result SSA: ";
+      result.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nResult SSA size: ";
+      resultSize.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nValue: ";
+      value.print(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\nStorage size (not aligned): "
+                   << slice.getStorageSize();
+      llvm::dbgs() << "\n\n";
+    });
   }
 
   SmallVector<Value> uploadTimepoints;
@@ -659,6 +801,11 @@ struct PackConstantsPass
     }
 
     parentOp.walk([&](IREE::Stream::ResourceConstantsOp constantsOp) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "On Op: \n";
+        constantsOp.dump();
+        llvm::dbgs() << "\n";
+      });
       // Derive resource constraints based on pack affinity.
       auto resourceConfig =
           IREE::Stream::ResourceConfigAttr::lookup(constantsOp);

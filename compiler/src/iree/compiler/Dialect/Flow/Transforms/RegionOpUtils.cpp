@@ -808,10 +808,18 @@ bool isClonableIntoDispatchOp(Operation *op) {
     return true;
   }
   if (isa<arith::ConstantOp>(op) || isa<complex::ConstantOp>(op)) {
-    if (clInlineConstantByteLength == 0)
+    LLVM_DEBUG({
+      llvm::dbgs() << "~~~~ Constant Op is ~~~~\n";
+      op->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n";
+    });
+    if (clInlineConstantByteLength == 0) {
+      LLVM_DEBUG({ llvm::dbgs() << "@@@@ Rejected 1\n"; });
       return false;
+    }
     Attribute constantValueAttr;
     if (!matchPattern(op->getResult(0), m_Constant(&constantValueAttr))) {
+      LLVM_DEBUG({ llvm::dbgs() << "@@@@ Rejected 2\n"; });
       return false;
     }
 
@@ -824,6 +832,10 @@ bool isClonableIntoDispatchOp(Operation *op) {
           (shapedType.getNumElements() *
            IREE::Util::getTypeBitWidth(shapedType.getElementType())) /
           8;
+      if (!(attr.isSplat() ||
+            estimatedByteLength <= clInlineConstantByteLength)) {
+        LLVM_DEBUG({ llvm::dbgs() << "@@@@ Rejected 3\n"; });
+      }
       return attr.isSplat() ||
              estimatedByteLength <= clInlineConstantByteLength;
     } else if (constantType.isIntOrIndexOrFloat() ||
@@ -891,22 +903,54 @@ getCloneableOps(IREE::Flow::DispatchRegionOp regionOp) {
   worklist.assign(valuesDefinedAbove.begin(), valuesDefinedAbove.end());
   while (!worklist.empty()) {
     Value outsideValue = worklist.pop_back_val();
+    LLVM_DEBUG({
+      llvm::dbgs() << "Outside value is: ";
+      outsideValue.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n";
+    });
     // Skip values that were already visited.
-    if (visited.count(outsideValue))
+    if (visited.count(outsideValue)) {
+      LLVM_DEBUG({ llvm::dbgs() << "Outside value already visited\n"; });
+      LLVM_DEBUG({ llvm::dbgs() << "\n\n"; });
       continue;
+    }
     visited.insert(outsideValue);
 
     Operation *definingOp = outsideValue.getDefiningOp();
     if (!definingOp || !IREE::Flow::isClonableIntoDispatchOp(definingOp) ||
         hasUnfusableUseInDispatch(outsideValue, regionOp)) {
+      if (!definingOp) {
+        LLVM_DEBUG({ llvm::dbgs() << "Defining op does not exist\n"; });
+      } else {
+        LLVM_DEBUG({
+          llvm::dbgs() << "Defining op is: ";
+          definingOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+          llvm::dbgs() << "\n";
+        });
+      }
+      if (!IREE::Flow::isClonableIntoDispatchOp(definingOp)) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "Defining op is not clonable into dispatch region\n";
+        });
+      }
+      if (hasUnfusableUseInDispatch(outsideValue, regionOp)) {
+        LLVM_DEBUG({ llvm::dbgs() << "Outside value has unfusable use\n"; });
+      }
       valuesDefinedAbove.insert(outsideValue);
+      LLVM_DEBUG({ llvm::dbgs() << "\n\n"; });
       continue;
     }
+    LLVM_DEBUG({
+      llvm::dbgs() << "Defining op is: ";
+      definingOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n";
+    });
     result.push_back(definingOp);
     worklist.append(definingOp->operand_begin(), definingOp->operand_end());
     llvm::SetVector<Value> nestedValues;
     mlir::getUsedValuesDefinedAbove(definingOp->getRegions(), nestedValues);
     worklist.append(nestedValues.begin(), nestedValues.end());
+    LLVM_DEBUG({ llvm::dbgs() << "\n\n"; });
   }
 
   return result;

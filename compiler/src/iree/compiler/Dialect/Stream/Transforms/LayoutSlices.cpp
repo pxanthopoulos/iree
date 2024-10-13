@@ -69,34 +69,111 @@ packStaticSlicesGreedily(IREE::Stream::ResourcePackOp packOp, Value baseOffset,
 
   std::list<Reservation> reservations;
   int64_t highwaterMark = 0;
+  LLVM_DEBUG({ llvm::dbgs() << "--- Iterating over slices:\n\n"; });
   for (auto &slice : slices) {
     int64_t bestOffset = UNASSIGNED;
     int64_t bestOffsetFit = UNASSIGNED;
     int64_t staticSize =
         cast<arith::ConstantIndexOp>(slice.dynamicSize.getDefiningOp()).value();
     int64_t alignedSize = IREE::Util::align(staticSize, rangeAlignment);
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- --- On slice:\n\n";
+      AsmState asmState(packOp->getParentOp());
+      llvm::dbgs() << "Lifetime: [" << slice.lifetimeStart << ","
+                   << slice.lifetimeEnd << "]\nDynamic size: ";
+      slice.dynamicSize.dump();
+      llvm::dbgs() << "Static size: " << staticSize
+                   << "\nAligned size: " << alignedSize;
+      llvm::dbgs() << "\nPacked offset: ";
+      slice.packedOffset.printAsOperand(llvm::dbgs(), asmState);
+      llvm::dbgs() << "\n\n";
+    });
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "--- --- --- Iterating over memory reservations and trying "
+             "to find gap that the slice fits in:\n\n";
+    });
 
     // Iterate through reservations (sorted by ascending offset) and identify
     // gaps in which the slice will fit. To reduce wastage we want to find the
     // smallest gap.
     int64_t currentOffset = 0;
     for (auto &reservation : reservations) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- --- --- --- On reservation for slice: ";
+        AsmState asmState(packOp->getParentOp());
+        reservation.slice->packedOffset.printAsOperand(llvm::dbgs(), asmState);
+        llvm::dbgs() << "\n\n";
+      });
       if (!reservation.slice->intersects(slice)) {
         // Non-overlapping - we can reuse the currentOffset (assuming we find
         // no better place).
+        LLVM_DEBUG({
+          llvm::dbgs()
+              << "--- --- --- --- Skipping because slices do not overlap\n\n";
+        });
         continue;
       }
 
       // If we found a gap >= the required size and smaller than
       // previous best fit take it.
       int64_t alignedOffset = IREE::Util::align(currentOffset, offsetAlignment);
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- --- --- --- Current aligned offset is: "
+                     << alignedOffset << "\n\n";
+      });
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "--- --- --- --- Checking if we fit before this reservation:\n"
+            << "-> alignedOffset + alignedSize <= reservation.staticOffset\n"
+            << "-> " << alignedOffset << " + " << alignedSize
+            << " <= " << reservation.staticOffset << "\n"
+            << "-> " << alignedOffset + alignedSize
+            << " <= " << reservation.staticOffset << "\n"
+            << "-> "
+            << (alignedOffset + alignedSize <= reservation.staticOffset)
+            << "\n\n";
+      });
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "--- --- --- --- Checking if the fit is smaller than the "
+               "previous:\n"
+            << "-> reservation.staticOffset - alignedOffset < bestOffsetFit\n"
+            << "-> " << reservation.staticOffset << " - " << alignedOffset
+            << " < " << bestOffsetFit << "\n"
+            << "-> " << reservation.staticOffset - alignedOffset << " < "
+            << bestOffsetFit << "\n"
+            << "-> "
+            << (reservation.staticOffset - alignedOffset < bestOffsetFit)
+            << "\n\n";
+      });
       if (alignedOffset + alignedSize <= reservation.staticOffset &&
           reservation.staticOffset - alignedOffset < bestOffsetFit) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "--- --- --- --- Both conditions are "
+                          "satisfied.\nUpdating best offset: From: "
+                       << bestOffset;
+        });
         bestOffset = alignedOffset;
+        LLVM_DEBUG({
+          llvm::dbgs() << " To: " << bestOffset;
+          llvm::dbgs() << "\nUpdating best fit: From: " << bestOffsetFit;
+        });
         bestOffsetFit = reservation.staticOffset - currentOffset;
+        LLVM_DEBUG({ llvm::dbgs() << " To: " << bestOffsetFit << "\n\n"; });
+      } else {
+        LLVM_DEBUG({
+          llvm::dbgs()
+              << "--- --- --- --- Not both conditions are satisfied\n\n";
+        });
       }
+      LLVM_DEBUG({
+        llvm::dbgs() << "--- --- --- --- Updating current offset: From: "
+                     << currentOffset;
+      });
       currentOffset = std::max(currentOffset, reservation.staticOffset +
                                                   reservation.staticSize);
+      LLVM_DEBUG({ llvm::dbgs() << " To: " << currentOffset << "\n\n"; });
     }
     if (bestOffset == UNASSIGNED) {
       bestOffset = IREE::Util::align(currentOffset, offsetAlignment);
@@ -107,6 +184,11 @@ packStaticSlicesGreedily(IREE::Stream::ResourcePackOp packOp, Value baseOffset,
     reservation.slice = &slice;
     reservation.staticOffset = bestOffset;
     reservation.staticSize = alignedSize;
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "--- --- --- New reservation for the slice:\n\nBest offset: "
+          << bestOffset << "\nAligned size: " << alignedSize << "\n\n";
+    });
     auto insertionIt = reservations.begin();
     while (insertionIt != reservations.end() &&
            insertionIt->staticOffset < reservation.staticOffset) {
@@ -119,9 +201,17 @@ packStaticSlicesGreedily(IREE::Stream::ResourcePackOp packOp, Value baseOffset,
     // Update highwater mark indicating how much memory needs to be allocated
     // for the entire slab.
     highwaterMark = std::max(highwaterMark, bestOffset + alignedSize);
+    LLVM_DEBUG({
+      llvm::dbgs() << "--- --- --- New high water mark: " << highwaterMark
+                   << "\n\n";
+    });
   }
 
   highwaterMark = IREE::Util::align(highwaterMark, rangeAlignment);
+  LLVM_DEBUG({
+    llvm::dbgs() << "--- --- Final high water mark: " << highwaterMark
+                 << "\n\n";
+  });
   return builder.createOrFold<arith::AddIOp>(packOp.getLoc(), baseOffset,
                                              indexSet.get(highwaterMark));
 }
@@ -231,6 +321,11 @@ struct LayoutSlicesPass
     // now we just pack greedily as it's fast and what most existing ML
     // frameworks do.
     parentOp.walk([&](IREE::Stream::ResourcePackOp packOp) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "On Op: \n";
+        packOp.dump();
+        llvm::dbgs() << "\n";
+      });
       // Derive resource constraints based on pack affinity.
       auto resourceConfig = IREE::Stream::ResourceConfigAttr::lookup(packOp);
 
@@ -241,12 +336,27 @@ struct LayoutSlicesPass
       SmallVector<Slice> dynamicSlices;
       staticSlices.reserve(allSlices.size());
       dynamicSlices.reserve(allSlices.size());
+      LLVM_DEBUG({
+        llvm::dbgs() << "\n@@@ Iterating over slices and splitting static from "
+                        "dynamic sized\n\n";
+      });
       for (auto &slice : allSlices) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "--- On slice:\n\n";
+          AsmState asmState(parentOp);
+          llvm::dbgs() << "Lifetime: [" << slice.lifetimeStart << ","
+                       << slice.lifetimeEnd << "]\nDynamic size: ";
+          slice.dynamicSize.dump();
+          llvm::dbgs() << "Packed offset: ";
+          slice.packedOffset.printAsOperand(llvm::dbgs(), asmState);
+        });
         if (isa_and_nonnull<arith::ConstantOp>(
                 slice.dynamicSize.getDefiningOp())) {
           staticSlices.push_back(slice);
+          LLVM_DEBUG({ llvm::dbgs() << "\nType: Static\n\n"; });
         } else {
           dynamicSlices.push_back(slice);
+          LLVM_DEBUG({ llvm::dbgs() << "\nType: Dynamic\n\n"; });
         }
       }
 
@@ -257,6 +367,8 @@ struct LayoutSlicesPass
       // compile time.
       auto offset = packOp.getOffset() ? packOp.getOffset() : indexSet.get(0);
       if (!staticSlices.empty()) {
+        LLVM_DEBUG(
+            { llvm::dbgs() << "\n@@@ Packing static sized slices\n\n"; });
         offset = packStaticSlicesGreedily(packOp, offset, staticSlices,
                                           resourceConfig, indexSet, builder);
 
@@ -270,6 +382,8 @@ struct LayoutSlicesPass
       // available we could reuse static slices with non-overlapping lifetimes
       // in some cases.
       if (!dynamicSlices.empty()) {
+        LLVM_DEBUG(
+            { llvm::dbgs() << "\n@@@ Packing dynamic sized slices\n\n"; });
         offset = packDynamicSlicesConservatively(
             packOp, offset, dynamicSlices, resourceConfig, indexSet, builder);
       }

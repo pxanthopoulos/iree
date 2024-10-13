@@ -94,3 +94,6 @@ artifacts/
 # Side effects of local patching/merging
 *.orig
 *.rej
+
+workspace/
+iree-build/

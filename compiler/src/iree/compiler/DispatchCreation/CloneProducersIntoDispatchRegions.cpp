@@ -7,6 +7,8 @@
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
 #include "iree/compiler/DispatchCreation/Passes.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -26,9 +28,11 @@ struct CloneProducersIntoDispatchRegionsPass final
     : public impl::CloneProducersIntoDispatchRegionsPassBase<
           CloneProducersIntoDispatchRegionsPass> {
   void runOnOperation() override {
+    LLVM_DEBUG({ llvm::dbgs() << "First call to runOnOperation\n\n\n"; });
     mlir::FunctionOpInterface funcOp = getOperation();
     IRRewriter rewriter(funcOp->getContext());
-
+    LLVM_DEBUG(
+        { llvm::dbgs() << "First call to cloneProducersToRegion\n\n\n"; });
     funcOp->walk([&](IREE::Flow::DispatchRegionOp regionOp) {
       if (failed(cloneProducersToRegion(rewriter, regionOp)))
         return signalPassFailure();
@@ -47,6 +51,8 @@ struct CloneProducersIntoDispatchRegionsPass final
       }
     });
 
+    LLVM_DEBUG(
+        { llvm::dbgs() << "Second call to cloneProducersToRegion\n\n\n"; });
     // Rerun the cloning again to move still clonable operations into
     // dispatches.
     funcOp->walk([&](IREE::Flow::DispatchRegionOp regionOp) {

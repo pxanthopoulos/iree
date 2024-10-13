@@ -220,6 +220,14 @@ static SmallVector<Block *, 8> sortBlocksInDominanceOrder(Region &region) {
 LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
                             const PartitioningConfigAttr &configAttr) {
   for (auto *block : sortBlocksInDominanceOrder(region)) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "\nBefore:\n";
+      block->dump();
+      llvm::dbgs() << "\n";
+    });
+
+    LLVM_DEBUG({ llvm::dbgs() << "Partition Information: BEGIN\n\n"; });
+
     // Compute a set of partitions covering all of the streamable ops in the
     // block.
     auto partitionSet = partitionStreamableOps(configAttr, block);
@@ -228,6 +236,8 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     if (failed(partitionSet.verify(loc))) {
       return failure();
     }
+
+    LLVM_DEBUG({ llvm::dbgs() << "\nPartition Information: END\n\n"; });
 
     // Create partition builders for each partition.
     // We'll clone ops into each and insert them into the block at the
@@ -294,6 +304,7 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     LLVM_DEBUG({
       llvm::dbgs() << "\nPartitions constructed:\n";
       block->dump();
+      llvm::dbgs() << "\n\n";
     });
   }
 
@@ -319,6 +330,10 @@ struct ScheduleExecutionPass
     : public IREE::Stream::impl::ScheduleExecutionPassBase<
           ScheduleExecutionPass> {
   void runOnOperation() override {
+    LLVM_DEBUG({
+      llvm::dbgs() << "~~~~~~~~~~~~~~~~~~~~~~NEW "
+                      "RUN (schedule execution)~~~~~~~~~~~~~~~~~~~~~~~~\n\n";
+    });
     auto *context = &getContext();
     auto parentOp = getOperation();
     if (!parentOp.getCallableRegion() ||
@@ -351,6 +366,10 @@ struct ScheduleExecutionPass
     if (failed(applyPatternsAndFoldGreedily(getOperation(), frozenPatterns))) {
       return signalPassFailure();
     }
+    LLVM_DEBUG({
+      llvm::dbgs() << "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+                      "~~~~~~~~~~~~~~~~~~~~\n";
+    });
   }
 };
 
