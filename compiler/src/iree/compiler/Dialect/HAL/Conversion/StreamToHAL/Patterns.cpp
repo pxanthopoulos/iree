@@ -15,7 +15,6 @@
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamTypes.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
-#include "iree/compiler/Dialect/VM/IR/VMOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -24,6 +23,7 @@
 
 #include <llvm/Support/raw_ostream.h>
 #include <string>
+#include "iree/compiler/Dialect/VM/IR/VMOps.h"
 
 #define DEBUG_TYPE "iree-hal-to-stream-patterns"
 
@@ -445,7 +445,7 @@ struct TensorImportBufferViewOpPattern
         llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
             importOp->getAttr("affinity"));
     auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
-    auto moduleOp = importOp->getParentOp();
+    auto moduleOp = importOp->getResult(0).getOwner();
     while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
       moduleOp = moduleOp->getParentOp();
     }
