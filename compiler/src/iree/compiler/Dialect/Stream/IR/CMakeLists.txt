@@ -55,6 +55,7 @@ iree_cc_library(
     MLIRViewLikeInterface
     iree::compiler::Dialect::Util::IR
     iree::compiler::Utils
+    iree::compiler::Dialect::VM::IR
   PUBLIC
 )
 
