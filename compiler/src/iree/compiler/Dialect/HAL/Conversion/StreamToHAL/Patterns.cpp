@@ -15,11 +15,17 @@
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamTypes.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
+#include "iree/compiler/Dialect/VM/IR/VMOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/RegionUtils.h"
+
+#include <llvm/Support/raw_ostream.h>
+#include <string>
+
+#define DEBUG_TYPE "iree-hal-to-stream-patterns"
 
 namespace mlir::iree_compiler {
 
@@ -425,6 +431,57 @@ struct TensorImportBufferViewOpPattern
 
     auto bufferView = adaptor.getSource();
     auto bufferType = rewriter.getType<IREE::HAL::BufferType>();
+
+    auto deviceAffinityAttr =
+        llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
+            importOp->getAttr("affinity"));
+    auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
+    auto moduleOp = importOp->getParentOp();
+    while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
+      moduleOp = moduleOp->getParentOp();
+    }
+    SymbolTable symbolTable(moduleOp);
+    auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
+    auto initialValue = rootAttrDef->getAttr("initial_value");
+    std::string buffer;
+    llvm::raw_string_ostream os(buffer);
+    initialValue.print(os);
+    std::string result = os.str();
+    std::string device;
+    if (result.find("cuda") != std::string::npos) {
+      device = std::string("cuda");
+    } else {
+      device = std::string("local");
+    }
+    std::string sizeType;
+    auto value = adaptor.getResultSize().getDefiningOp()->getAttr("value");
+    if (value) {
+      sizeType = std::string("static");
+    } else {
+      sizeType = std::string("dynamic");
+    }
+    auto lifetime =
+        llvm::cast<IREE::Stream::ResourceType>(importOp.getResult().getType())
+            .getLifetime();
+    std::string lifetimeStr;
+    if (lifetime == IREE::Stream::Lifetime::Unknown) {
+      lifetimeStr = std::string("*");
+    } else {
+      lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
+    }
+    auto castOp = rewriter.createOrFold<arith::IndexCastUIOp>(
+        loc, rewriter.getIntegerType(64), adaptor.getResultSize());
+    OperationState state{importOp.getLoc(),
+                         IREE::VM::PrintOp::getOperationName()};
+    auto finalStr = std::string("INPUT IMPORT device:") + device +
+                    std::string(" sizetype:") + sizeType +
+                    std::string(" lifetime:") + lifetimeStr +
+                    std::string(", see size");
+    state.addAttribute("message",
+                       mlir::StringAttr::get(rewriter.getContext(), finalStr));
+    state.addOperands({castOp});
+    rewriter.create(state);
+
     auto bufferOp = rewriter.replaceOpWithNewOp<IREE::HAL::BufferViewBufferOp>(
         importOp, bufferType, bufferView);
 
