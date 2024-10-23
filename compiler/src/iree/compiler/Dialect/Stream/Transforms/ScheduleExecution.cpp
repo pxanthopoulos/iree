@@ -142,10 +142,6 @@ struct ExecutePartitionBuilder {
     // Clone the op into the partition and remap it.
     auto *clonedOp = builder.clone(*op, mapping);
     (void)clonedOp;
-    LLVM_DEBUG({
-      llvm::dbgs() << "Cloned op into partition " << ordinal << ": ";
-      clonedOp->dump();
-    });
 
     // If the op has the same affinity as the partition region we can strip it.
     // Note that some ops may have affinities that are more specific and we
@@ -219,25 +215,46 @@ static SmallVector<Block *, 8> sortBlocksInDominanceOrder(Region &region) {
 
 LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
                             const PartitioningConfigAttr &configAttr) {
+  LLVM_DEBUG({
+    llvm::dbgs() << "Processing the following region:\n";
+    region.getParentOp()->dump();
+    llvm::dbgs() << "\n\n";
+  });
+  LLVM_DEBUG({
+    llvm::dbgs() << "Visiting the blocks of the region by decreasing "
+                    "dominance order "
+                    "(entry block first, dominant first)\n\n\n";
+  });
   for (auto *block : sortBlocksInDominanceOrder(region)) {
     LLVM_DEBUG({
-      llvm::dbgs() << "\nBefore:\n";
+      llvm::dbgs() << "@@@ In block:\n";
       block->dump();
-      llvm::dbgs() << "\n";
+      llvm::dbgs() << "\n\n";
     });
 
-    LLVM_DEBUG({ llvm::dbgs() << "Partition Information: BEGIN\n\n"; });
+    LLVM_DEBUG({ llvm::dbgs() << "@@@ Partition Information: BEGIN\n\n\n"; });
 
     // Compute a set of partitions covering all of the streamable ops in the
     // block.
     auto partitionSet = partitionStreamableOps(configAttr, block);
-    if (partitionSet.empty())
+    if (partitionSet.empty()) {
+      LLVM_DEBUG(
+          { llvm::dbgs() << "@@@ Empty partition set, continuing...\n\n\n"; });
       continue;
+    }
     if (failed(partitionSet.verify(loc))) {
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "@@@ Partition set failed verification, exiting...\n\n\n";
+      });
       return failure();
     }
 
-    LLVM_DEBUG({ llvm::dbgs() << "\nPartition Information: END\n\n"; });
+    LLVM_DEBUG({ llvm::dbgs() << "@@@ Partition Information: END\n\n\n"; });
+    LLVM_DEBUG({
+      llvm::dbgs() << "@@@ Creating appropriate IR for each partition (ins, "
+                      "outs, awaits, execute op, etc)\n\n\n";
+    });
 
     // Create partition builders for each partition.
     // We'll clone ops into each and insert them into the block at the
@@ -302,15 +319,23 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     }
 
     LLVM_DEBUG({
-      llvm::dbgs() << "\nPartitions constructed:\n";
+      llvm::dbgs() << "@@@ Partitions constructed:\n";
       block->dump();
       llvm::dbgs() << "\n\n";
     });
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "Visiting the ops of the region again to process scf "
+                    "subregions\n\n\n";
+  });
   for (auto *block : sortBlocksInDominanceOrder(region)) {
     for (auto &op : *block) {
       if (isa<scf::SCFDialect>(op.getDialect())) {
+        LLVM_DEBUG({
+          llvm::dbgs()
+              << "Found an SCF op, recursively processing its subregions\n\n\n";
+        });
         for (auto &subregion : op.getRegions()) {
           if (failed(processRegion(loc, context, subregion, configAttr)))
             return failure();
@@ -332,7 +357,7 @@ struct ScheduleExecutionPass
   void runOnOperation() override {
     LLVM_DEBUG({
       llvm::dbgs() << "~~~~~~~~~~~~~~~~~~~~~~NEW "
-                      "RUN (schedule execution)~~~~~~~~~~~~~~~~~~~~~~~~\n\n";
+                      "RUN (schedule execution)~~~~~~~~~~~~~~~~~~~~~~~~\n\n\n";
     });
     auto *context = &getContext();
     auto parentOp = getOperation();
@@ -350,8 +375,19 @@ struct ScheduleExecutionPass
     // order so that we are sure if we replace values that dominate other blocks
     // they see the correct values.
     auto &region = *parentOp.getCallableRegion();
+
+    LLVM_DEBUG({
+      if (configAttr) {
+        llvm::dbgs() << "Partitioning config attribute:\n";
+        configAttr.dump();
+        llvm::dbgs() << "\n\n";
+      }
+    });
+
     if (failed(processRegion(parentOp.getLoc(), context, region, configAttr)))
       return signalPassFailure();
+
+    LLVM_DEBUG({ llvm::dbgs() << "Cleaning up\n\n\n"; });
 
     // Cleanup the dead ops.
     // TODO(benvanik): less work here - maybe no patterns to just force folding?
@@ -367,8 +403,8 @@ struct ScheduleExecutionPass
       return signalPassFailure();
     }
     LLVM_DEBUG({
-      llvm::dbgs() << "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-                      "~~~~~~~~~~~~~~~~~~~~\n";
+      llvm::dbgs() << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+                      "~~~~~~~~~~~~~~~~~~~~\n\n";
     });
   }
 };

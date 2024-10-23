@@ -183,7 +183,7 @@ struct ScheduleConcurrencyPass
   void runOnOperation() override {
     LLVM_DEBUG({
       llvm::dbgs() << "~~~~~~~~~~~~~~~~~~~~~~NEW "
-                      "RUN (schedule concurrency)~~~~~~~~~~~~~~~~~~~~~~\n\n";
+                      "RUN (schedule concurrency)~~~~~~~~~~~~~~~~~~~~~~\n\n\n";
     });
     auto parentOp = getOperation();
     if (!parentOp.getCallableRegion() ||
@@ -196,9 +196,8 @@ struct ScheduleConcurrencyPass
         return signalPassFailure();
     }
     LLVM_DEBUG({
-      llvm::dbgs()
-          << "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-             "~~~~~~~~~~~~~~~~~~\n";
+      llvm::dbgs() << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+                      "~~~~~~~~~~~~~~~~~~\n\n";
     });
   }
 
@@ -208,25 +207,43 @@ struct ScheduleConcurrencyPass
     }
     auto *block = &parentOp.getBody().front();
     LLVM_DEBUG({
-      llvm::dbgs() << "\nBefore:\n";
-      block->dump();
-      llvm::dbgs() << "\n";
+      llvm::dbgs() << "Processing the following region:\n";
+      parentOp.dump();
+      llvm::dbgs() << "\n\n";
     });
 
     // Lookup the optional config used to control partitioning.
     auto configAttr = IREE::Stream::PartitioningConfigAttr::lookup(parentOp);
 
-    LLVM_DEBUG({ llvm::dbgs() << "Wave Information: BEGIN\n\n"; });
+    LLVM_DEBUG({
+      if (configAttr) {
+        llvm::dbgs() << "Partitioning config attribute:\n";
+        configAttr.dump();
+        llvm::dbgs() << "\n\n";
+      }
+    });
+
+    LLVM_DEBUG({ llvm::dbgs() << "Wave Information: BEGIN\n\n\n"; });
 
     // Compute a set of partitions covering all of the streamable ops in the
     // execution region.
     auto waveSet = partitionRegionConcurrency(configAttr, block);
-    if (waveSet.empty())
+    if (waveSet.empty()) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "Empty wave set, exiting...\n\n\n";
+        llvm::dbgs() << "Wave Information: END\n\n\n";
+      });
       return success();
-    if (failed(waveSet.verify(parentOp.getLoc())))
+    }
+    if (failed(waveSet.verify(parentOp.getLoc()))) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "Wave set failed verification, exiting...\n\n\n";
+        llvm::dbgs() << "Wave Information: END\n\n\n";
+      });
       return failure();
+    }
 
-    LLVM_DEBUG({ llvm::dbgs() << "\nWave Information: END\n\n"; });
+    LLVM_DEBUG({ llvm::dbgs() << "Wave Information: END\n\n\n"; });
 
     // Create partition builders for each partition.
     // We'll clone ops into each and insert them into the block at the
@@ -284,7 +301,7 @@ struct ScheduleConcurrencyPass
     mlir::sortTopologically(block);
 
     LLVM_DEBUG({
-      llvm::dbgs() << "\nWaves constructed:\n";
+      llvm::dbgs() << "@@@ Waves constructed:\n";
       block->dump();
       llvm::dbgs() << "\n\n";
     });

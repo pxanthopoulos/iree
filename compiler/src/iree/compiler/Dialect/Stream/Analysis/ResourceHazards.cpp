@@ -20,7 +20,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 
-#define DEBUG_TYPE "iree-util-dfx"
+#define DEBUG_TYPE "iree-util-dfx-1"
 
 namespace mlir::iree_compiler::IREE::Stream {
 
@@ -47,6 +47,12 @@ bool ResourceHazardAnalysis::hasHazard(Operation *producerOp,
   auto consumerAccessOp =
       dyn_cast<IREE::Stream::AsyncAccessOpInterface>(consumerOp);
   if (!producerAccessOp || !consumerAccessOp) {
+    LLVM_DEBUG(
+        llvm::dbgs()
+        << "Either consumer or producer is does not support the async access "
+           "interface\nJust check if the producer-consumer relationship is "
+           "immediate\n(consumer is not just consumer of operands of "
+           "producer)\n\n");
     // Fallback to default whole resource checks.
     return llvm::is_contained(producerOp->getUsers(), consumerOp);
   }
@@ -68,7 +74,7 @@ bool ResourceHazardAnalysis::hasHazard(Operation *producerOp,
           range.print(llvm::dbgs(), *asmState);
         },
         "\n");
-    llvm::dbgs() << "\n";
+    llvm::dbgs() << "\n\n";
     llvm::dbgs() << "consumer: ";
     consumerOp->print(llvm::dbgs(), *asmState);
     llvm::dbgs() << "\n";
@@ -82,6 +88,10 @@ bool ResourceHazardAnalysis::hasHazard(Operation *producerOp,
     llvm::dbgs() << "\n";
   });
 
+  LLVM_DEBUG(
+      llvm::dbgs() << "For all pairs of access ranges, check if they overlap "
+                      "and if they actually conflict (not both RO)\n If one "
+                      "true hazard is found, return true\n\n");
   for (auto &producerRange : allProducerRanges) {
     for (auto &consumerRange : allConsumerRanges) {
       if (producerRange.resource == consumerRange.resource) {
