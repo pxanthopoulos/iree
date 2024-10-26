@@ -252,6 +252,11 @@ ScatterOp::reifyResultShapes(OpBuilder &b,
       .reifyResultShapes(b, reifiedReturnShapes);
 }
 
+FailureOr<SmallVector<int64_t>> ScatterOp::getStaticLoopRanges() {
+  // Scatter loop ranges are loop ranges for update.
+  return SmallVector<int64_t>(getUpdateType().getShape());
+}
+
 SmallVector<AffineMap> ScatterOp::getIndexingMapsForOperands() {
   Builder builder(getContext());
   return {builder.getMultiDimIdentityMap(getUpdateType().getRank()),
@@ -1302,6 +1307,20 @@ LogicalResult AttentionOp::verify() {
       return failure();
   }
 
+  auto &block = getRegion().front();
+  auto blockTys = block.getArgumentTypes();
+  if (!isa<FloatType>(blockTys[0]))
+    return attnOp->emitOpError("block argument 0 should be float");
+
+  auto yieldOp = dyn_cast<IREE::LinalgExt::YieldOp>(block.getTerminator());
+  if (!yieldOp) {
+    return attnOp->emitOpError("expected linalg_ext.yield");
+  }
+
+  if (yieldOp->getNumOperands() != 1) {
+    return emitOpError("expected only one return");
+  }
+
   return success();
 }
 
@@ -1321,8 +1340,8 @@ SmallVector<AffineMap> AttentionOp::getIndexingMapsArray() {
       getIndexingMaps().getAsValueRange<AffineMapAttr>());
 }
 
-SmallVector<int64_t, 4> AttentionOp::getStaticLoopRanges() {
-  SmallVector<int64_t, 4> bounds(getIterationDomainRank());
+FailureOr<SmallVector<int64_t>> AttentionOp::getStaticLoopRanges() {
+  SmallVector<int64_t> bounds(getIterationDomainRank());
   SmallVector<bool> dimsFound(getIterationDomainRank(), false);
 
   // batch(s), m, k1
@@ -1455,6 +1474,25 @@ LogicalResult OnlineAttentionOp::verify() {
   if (auto maskMap = getMaskMap()) {
     if (failed(checkDomain("Mask", *maskMap)))
       return failure();
+  }
+
+  Block &block = attnOp.getRegion().front();
+  auto blockTys = block.getArgumentTypes();
+  if (blockTys.size() != 1) {
+    return attnOp->emitOpError("expects single block argument for score");
+  }
+
+  if (!isa<FloatType>(blockTys[0])) {
+    return attnOp->emitOpError("block argument 0 should be float");
+  }
+
+  auto yieldOp = dyn_cast<IREE::LinalgExt::YieldOp>(block.getTerminator());
+  if (!yieldOp) {
+    return attnOp->emitOpError("expected linalg_ext.yield");
+  }
+
+  if (yieldOp->getNumOperands() != 1) {
+    return emitOpError("expected only one return");
   }
 
   return success();

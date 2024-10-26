@@ -79,7 +79,8 @@ static Value reciprocalValue(OpBuilder &b, Location loc, Value input,
 }
 
 static Value truncateFloat(OpBuilder &builder, Location loc, AffineMap inputMap,
-                           AffineMap outputMap, Value value, Value output) {
+                           AffineMap outputMap, Value value, Value output,
+                           bool clampToFPRange) {
   SmallVector<AffineMap> compressedMaps =
       compressUnusedDims(SmallVector<AffineMap>{inputMap, outputMap});
   inputMap = compressedMaps[0];
@@ -94,19 +95,23 @@ static Value truncateFloat(OpBuilder &builder, Location loc, AffineMap inputMap,
         auto srcTy = cast<FloatType>(args[0].getType());
         auto dstTy = cast<FloatType>(args[1].getType());
 
-        double mxDbl =
-            APFloat::getLargest(dstTy.getFloatSemantics(), /*Negative=*/false)
-                .convertToDouble();
+        Value input = args[0];
 
-        // Clamp input to dstTy(usually `fp8`) MAX value to prevent NaNs.
-        // We do not clamp for `-MAX` because this function meant to only be
-        // used by attention's exp2 who's value is always > 0.
-        Value mx = builder.create<arith::ConstantOp>(
-            loc, builder.getFloatAttr(srcTy, mxDbl));
-        Value clamp = b.create<arith::MinimumFOp>(loc, mx, args[0]);
+        if (clampToFPRange) {
+          double mxDbl =
+              APFloat::getLargest(dstTy.getFloatSemantics(), /*Negative=*/false)
+                  .convertToDouble();
+
+          // Clamp input to dstTy(usually `fp8`) MAX value to prevent NaNs.
+          // We do not clamp for `-MAX` because this function meant to only be
+          // used by attention's exp2 who's value is always > 0.
+          Value mx = builder.create<arith::ConstantOp>(
+              loc, builder.getFloatAttr(srcTy, mxDbl));
+          input = b.create<arith::MinimumFOp>(loc, mx, input);
+        }
 
         // Convert scale to the same datatype as input.
-        Value trunc = convertScalarToDtype(b, loc, clamp, dstTy,
+        Value trunc = convertScalarToDtype(b, loc, input, dstTy,
                                            /*isUnsignedCast=*/false);
         b.create<linalg::YieldOp>(loc, trunc);
       });
@@ -175,6 +180,28 @@ static Value computeMatmul(OpBuilder &builder, Location loc, AffineMap lhsMap,
         b.create<linalg::YieldOp>(loc, add);
       });
 
+  return genericOp.getResult(0);
+}
+
+static Value applyPostQKMatmulElementwise(OpBuilder &builder, Location loc,
+                                          Region &region, Value value) {
+  auto rank = cast<RankedTensorType>(value.getType()).getRank();
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(rank, builder.getContext());
+  SmallVector<AffineMap> indexingMaps{identityMap};
+  SmallVector<utils::IteratorType> iteratorTypes(rank,
+                                                 utils::IteratorType::parallel);
+  auto genericOp = builder.create<linalg::GenericOp>(
+      loc, value.getType(), ValueRange{}, value, indexingMaps, iteratorTypes);
+  auto &dstRegion = genericOp.getRegion();
+  builder.cloneRegionBefore(region, dstRegion, dstRegion.end());
+  {
+    OpBuilder::InsertionGuard withinRegion(builder);
+    builder.setInsertionPoint(dstRegion.back().getTerminator());
+    builder.create<linalg::YieldOp>(
+        loc, dstRegion.back().getTerminator()->getOperands());
+    dstRegion.back().getTerminator()->erase();
+  }
   return genericOp.getResult(0);
 }
 
@@ -339,12 +366,17 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   Value emptyS = b.create<tensor::EmptyOp>(loc, sSizes, elementType);
   Value sZero = b.create<arith::ConstantOp>(loc, b.getZeroAttr(elementType));
   Value s = b.create<linalg::FillOp>(loc, sZero, emptyS).getResult(0);
+
   s = computeMatmul(b, loc, getQueryMap(), getKeyMap(), sMap, query, key, s);
+
   // TODO: We shouldn't be relying on such attributes. We need a better
   // mechanism to identify attention matmuls.
   s.getDefiningOp()->setAttr("attention_qk_matmul", b.getUnitAttr());
 
-  if (qETy.getIntOrFloatBitWidth() <= 8) {
+  s = applyPostQKMatmulElementwise(b, loc, getRegion(), s);
+
+  bool lowPrecision = qETy.getIntOrFloatBitWidth() <= 8;
+  if (lowPrecision) {
     // For low bit-depth types we perform post Q @ K scaling. This is to avoid
     // losing numerical precision due to the low dynamic range of fp8 types when
     // pre applying the sclaing.
@@ -406,7 +438,7 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   auto pETy = getElementTypeOrSelf(p.getType());
   if (pETy != vETy && isa<FloatType>(vETy)) {
     Value convertP = b.create<tensor::EmptyOp>(loc, sSizes, vETy);
-    p = truncateFloat(b, loc, pMap, pMap, p, convertP);
+    p = truncateFloat(b, loc, pMap, pMap, p, convertP, lowPrecision);
   }
 
   Value newAcc = elementwiseValueInPlace<arith::MulFOp>(b, loc, accMap, normMap,

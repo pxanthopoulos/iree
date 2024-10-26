@@ -18,7 +18,6 @@
 #include "iree/compiler/Codegen/Interfaces/PartitionableLoopsInterface.h"
 #include "iree/compiler/Codegen/Interfaces/UKernelOpInterface.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
-#include "iree/compiler/Codegen/TransformStrategies/GPU/Strategies.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -62,11 +61,6 @@ llvm::cl::opt<bool> clGPUEnableVectorDistribution(
     "iree-codegen-llvmgpu-use-vector-distribution",
     llvm::cl::desc("enable the usage of the vector distribution pipeline"),
     llvm::cl::init(true));
-
-llvm::cl::opt<bool> clGPUEnableTransformDialectJit(
-    "iree-codegen-llvmgpu-enable-transform-dialect-jit",
-    llvm::cl::desc("enable the usage of the transform dialect JIT"),
-    llvm::cl::init(false));
 
 /// Flag to force using WMMA tensorcore operations.
 llvm::cl::opt<bool>
@@ -307,6 +301,11 @@ setConvolutionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   Type rhsElemType = getElementTypeOrSelf(rhs);
   Type initElemType = getElementTypeOrSelf(init);
 
+  // TODO(Max191): Support multiple M/N/K dimension problems for MMASchedules
+  // once the pipeline is able to support it. After adding multiple dimensions,
+  // all instances of schedule->m/nSubgroupCounts[0] and
+  // schedule->m/n/kTileSizes[0] need to use the full list of sizes instead of
+  // just the first element.
   GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
                              lhsElemType,  rhsElemType,  initElemType};
 
@@ -345,8 +344,9 @@ setConvolutionVectorDistributionConfig(IREE::GPU::TargetAttr target,
     return failure();
   }
 
-  std::array<int64_t, 3> workgroupSize{
-      schedule->nWarpCount * targetSubgroupSize, schedule->mWarpCount, 1};
+  std::array<int64_t, 3> workgroupSize{schedule->nSubgroupCounts[0] *
+                                           targetSubgroupSize,
+                                       schedule->mSubgroupCounts[0], 1};
 
   SmallVector<int64_t> workgroupTileSizes(op.getNumLoops(), 0);
   SmallVector<int64_t> reductionTileSizes(op.getNumLoops(), 0);
@@ -366,11 +366,11 @@ setConvolutionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   }
   // Compute the M/N dimension tile size by multiply subgroup information.
   workgroupTileSizes[mDim] =
-      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+      schedule->mSubgroupCounts[0] * schedule->mTileSizes[0] * schedule->mSize;
   workgroupTileSizes[nDim] =
-      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+      schedule->nSubgroupCounts[0] * schedule->nTileSizes[0] * schedule->nSize;
 
-  reductionTileSizes[kDim] = schedule->kTileCount * schedule->kSize;
+  reductionTileSizes[kDim] = schedule->kTileSizes[0] * schedule->kSize;
 
   // Tile all filter loop dimensions to 1.
   for (int64_t filterDim : convolutionDims->filterLoop) {
@@ -392,8 +392,8 @@ setConvolutionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   // for later access in the pipeline.
   SmallVector<NamedAttribute, 1> pipelineAttrs;
   auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
-      context, target.getWgp().getMma()[schedule->index], schedule->mWarpCount,
-      schedule->nWarpCount);
+      context, target.getWgp().getMma()[schedule->index],
+      schedule->mSubgroupCounts[0], schedule->nSubgroupCounts[0]);
   pipelineAttrs.emplace_back(StringAttr::get(context, "mma_schedule"),
                              scheduleAttr);
 
@@ -495,6 +495,11 @@ setMatmulVectorDistributionConfig(IREE::GPU::TargetAttr target,
       rhsElemType = getElementTypeOrSelf(rhsOp.getDpsInputs()[0]);
   }
 
+  // TODO(Max191): Support multiple M/N/K dimension problems for MMASchedules
+  // once the pipeline is able to support it. After adding multiple dimensions,
+  // all instances of schedule->m/nSubgroupCounts[0] and
+  // schedule->m/n/kTileSizes[0] need to use the full list of sizes instead of
+  // just the first element.
   GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
                              lhsElemType,  rhsElemType,  initElemType};
 
@@ -515,7 +520,7 @@ setMatmulVectorDistributionConfig(IREE::GPU::TargetAttr target,
   // Note that the following heuristic seeds are just placeholder values.
   // We need to clean it up and make it adjusting to different targets.
   // See https://github.com/iree-org/iree/issues/16341 for details.
-  if (problem.mSize * problem.nSize <= clGPUMatmulCThreshold) {
+  if (problem.mSizes[0] * problem.nSizes[0] <= clGPUMatmulCThreshold) {
     // For matmuls with small M*N size, we want to distribute M*N onto more
     // workgroups to fill the GPU. Use a smaller bestMNTileCountPerSubgroup
     // and a larger bestKTileCountPerSubgroup.
@@ -579,16 +584,11 @@ setMatmulVectorDistributionConfig(IREE::GPU::TargetAttr target,
   }
 
   LDBG("Target Subgroup size: " << targetSubgroupSize);
-  LDBG("Schedule: sizes [" << schedule->mSize << ", " << schedule->nSize << ", "
-                           << schedule->kSize << "]");
-  LDBG("Schedule: tile counts [" << schedule->mTileCount << ", "
-                                 << schedule->nTileCount << ", "
-                                 << schedule->kTileCount << "]");
-  LDBG("Schedule: warp counts [" << schedule->mWarpCount << ", "
-                                 << schedule->nWarpCount << "]");
+  LDBG("Schedule: " << schedule);
 
-  std::array<int64_t, 3> workgroupSize{
-      schedule->nWarpCount * targetSubgroupSize, schedule->mWarpCount, 1};
+  std::array<int64_t, 3> workgroupSize{schedule->nSubgroupCounts[0] *
+                                           targetSubgroupSize,
+                                       schedule->mSubgroupCounts[0], 1};
 
   SmallVector<int64_t> workgroupTileSizes(op.getNumLoops(), 0);
   SmallVector<int64_t> reductionTileSizes(op.getNumLoops(), 0);
@@ -611,11 +611,11 @@ setMatmulVectorDistributionConfig(IREE::GPU::TargetAttr target,
 
   // Compute the M/N dimension tile size by multiply subgroup information.
   workgroupTileSizes[mDim] =
-      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+      schedule->mSubgroupCounts[0] * schedule->mTileSizes[0] * schedule->mSize;
   workgroupTileSizes[nDim] =
-      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+      schedule->nSubgroupCounts[0] * schedule->nTileSizes[0] * schedule->nSize;
 
-  reductionTileSizes[kDim] = schedule->kTileCount * schedule->kSize;
+  reductionTileSizes[kDim] = schedule->kTileSizes[0] * schedule->kSize;
 
   LLVM_DEBUG(debugPrintContractionInfo("Workgroup tile sizes", op.getNumLoops(),
                                        *contractionDims, workgroupTileSizes));
@@ -637,8 +637,8 @@ setMatmulVectorDistributionConfig(IREE::GPU::TargetAttr target,
   // for later access in the pipeline.
   SmallVector<NamedAttribute, 1> pipelineAttrs;
   auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
-      context, target.getWgp().getMma()[schedule->index], schedule->mWarpCount,
-      schedule->nWarpCount);
+      context, target.getWgp().getMma()[schedule->index],
+      schedule->mSubgroupCounts[0], schedule->nSubgroupCounts[0]);
   pipelineAttrs.emplace_back(StringAttr::get(context, "mma_schedule"),
                              scheduleAttr);
 
@@ -672,7 +672,12 @@ setAttentionVectorDistributionConfig(IREE::GPU::TargetAttr target,
 
   // Get iteration domain bounds.
   OpBuilder b(op);
-  SmallVector<int64_t, 4> bounds = op.getStaticLoopRanges();
+  FailureOr<SmallVector<int64_t>> maybeBounds = op.getStaticLoopRanges();
+  if (failed(maybeBounds)) {
+    return failure();
+  }
+
+  ArrayRef<int64_t> bounds = maybeBounds.value();
 
   auto opInfo =
       IREE::LinalgExt::AttentionOpDetail::get(op.getIndexingMapsArray())
@@ -773,22 +778,17 @@ setAttentionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   // TODO: Due to a bug in layout configuration, we cannot set warp count on
   // the N dimension. This is however ok, because we generally do not want to
   // distribute subgroups on N dimension anyway.
-  if (schedule->nWarpCount != 1) {
-    schedule->nTileCount *= schedule->nWarpCount;
-    schedule->nWarpCount = 1;
+  if (schedule->nSubgroupCounts[0] != 1) {
+    schedule->nTileSizes[0] *= schedule->nSubgroupCounts[0];
+    schedule->nSubgroupCounts[0] = 1;
   }
 
   LDBG("Target Subgroup size: " << targetSubgroupSize);
-  LDBG("Schedule: sizes [" << schedule->mSize << ", " << schedule->nSize << ", "
-                           << schedule->kSize << "]");
-  LDBG("Schedule: tile counts [" << schedule->mTileCount << ", "
-                                 << schedule->nTileCount << ", "
-                                 << schedule->kTileCount << "]");
-  LDBG("Schedule: warp counts [" << schedule->mWarpCount << ", "
-                                 << schedule->nWarpCount << "]");
+  LDBG("Schedule: " << schedule);
 
-  std::array<int64_t, 3> workgroupSize{
-      schedule->nWarpCount * targetSubgroupSize, schedule->mWarpCount, 1};
+  std::array<int64_t, 3> workgroupSize{schedule->nSubgroupCounts[0] *
+                                           targetSubgroupSize,
+                                       schedule->mSubgroupCounts[0], 1};
 
   SmallVector<int64_t> workgroupTileSizes(opInfo.getDomainRank(), 0);
   SmallVector<int64_t> reductionTileSizes(op.getNumLoops(), 0);
@@ -812,11 +812,11 @@ setAttentionVectorDistributionConfig(IREE::GPU::TargetAttr target,
 
   // Compute the M/N dimension tile size by multiply subgroup information.
   workgroupTileSizes[mDim] =
-      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+      schedule->mSubgroupCounts[0] * schedule->mTileSizes[0] * schedule->mSize;
   workgroupTileSizes[nDim] =
-      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+      schedule->nSubgroupCounts[0] * schedule->nTileSizes[0] * schedule->nSize;
 
-  reductionTileSizes[k2Dim] = schedule->kTileCount * schedule->kSize;
+  reductionTileSizes[k2Dim] = schedule->kTileSizes[0] * schedule->kSize;
 
   MLIRContext *context = op.getContext();
   SmallVector<NamedAttribute, 2> attrs;
@@ -832,8 +832,8 @@ setAttentionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   // for later access in the pipeline.
   SmallVector<NamedAttribute, 1> pipelineAttrs;
   auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
-      context, target.getWgp().getMma()[schedule->index], schedule->mWarpCount,
-      schedule->nWarpCount);
+      context, target.getWgp().getMma()[schedule->index],
+      schedule->mSubgroupCounts[0], schedule->nSubgroupCounts[0]);
   pipelineAttrs.emplace_back(StringAttr::get(context, "mma_schedule"),
                              scheduleAttr);
 
@@ -1385,57 +1385,6 @@ static LogicalResult setRootDefaultConfig(IREE::GPU::TargetAttr target,
   return setOpConfigAndEntryPointFnTranslation(entryPoint, op, tileSizes,
                                                passPipeline, workgroupSize,
                                                preferredSubgroupSize);
-}
-
-//====---------------------------------------------------------------------===//
-// Transform Dialect Pipeline Configuration
-//====---------------------------------------------------------------------===//
-
-/// Set configuration for transform dialect based strategies.
-static LogicalResult
-setTransformDialectConfig(IREE::GPU::TargetAttr target,
-                          mlir::FunctionOpInterface entryPoint, Operation *op) {
-  if (!clGPUEnableTransformDialectJit) {
-    return failure();
-  }
-
-  auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
-      entryPoint.getContext(), CodeGenPipeline::TransformDialectCodegen);
-
-  // TODO: unify the target informations into one structure.
-  iree_compiler::gpu::GPUModel gpuModel;
-  gpuModel.hasWarpShuffle = target.supportsSubgroupShuffle();
-  gpuModel.hasTF32TensorCore = target.supportsTF32InputMMAOps();
-  gpuModel.hasMmaSync = target.supportsSyncMMAOps();
-
-  // Populates a subset of the fragment combinations supported in MLIR lowerings
-  // to NVVM (which is itself a subset of what LLVM supports) based on what the
-  // pipeline currently supports.
-  // TODO: avoid hard coding this and populate based on hardware capabilities.
-  // TODO: add missing supported configs once the pipeline supports it.
-  MLIRContext *context = entryPoint.getContext();
-  Type f32Type = Float32Type::get(context);
-  Type f16Type = Float16Type::get(context);
-
-  iree_compiler::gpu::MMAConfig f16f32AccConfig = {
-      /*m=*/16,          /*n=*/16,          /*k=*/16,
-      /*aType=*/f16Type, /*bType=*/f16Type, /*cType=*/f32Type};
-  iree_compiler::gpu::MMAConfig f16f16AccConfig = {
-      /*m=*/16,          /*n=*/16,          /*k=*/16,
-      /*aType=*/f16Type, /*bType=*/f16Type, /*cType=*/f16Type};
-  gpuModel.supportedWMMAConfigs = {f16f32AccConfig, f16f16AccConfig};
-
-  if (target.supportsTF32InputMMAOps()) {
-    iree_compiler::gpu::MMAConfig tf32WmmaConfig = {
-        /*m=*/16,          /*n=*/16,          /*k=*/8,
-        /*aType=*/f32Type, /*bType=*/f32Type, /*cType=*/f32Type};
-    gpuModel.supportedWMMAConfigs.push_back(tf32WmmaConfig);
-  }
-
-  if (failed(iree_compiler::gpu::matchAndSetTransformStrategy(entryPoint, op,
-                                                              gpuModel)))
-    return failure();
-  return setTranslationInfo(entryPoint, translationInfo);
 }
 
 static bool isMatvecLike(linalg::LinalgOp linalgOp) {
@@ -2010,11 +1959,6 @@ static LogicalResult setRootConfig(IREE::GPU::TargetAttr target,
     computeOp->print(llvm::dbgs(), OpPrintingFlags().skipRegions());
     llvm::dbgs() << "\n";
   });
-  // First try to see if there is a transform dialect configuration existing.
-  if (succeeded(setTransformDialectConfig(target, entryPointFn, computeOp))) {
-    LDBG("Transform Dialect Config");
-    return success();
-  }
   if (succeeded(setDataTiledMultiMmaLoweringConfig(target, entryPointFn,
                                                    computeOp))) {
     LDBG("Tile and fuse data tiled multi_mma config");
@@ -2083,6 +2027,11 @@ static LogicalResult setRootConfig(IREE::GPU::TargetAttr target,
       .Case<IREE::Codegen::UKernelOpInterface>([&](auto ukernelOp) {
         LDBG("Ukernel Config");
         return setUKernelConfig(entryPointFn, ukernelOp);
+      })
+      .Case<IREE::LinalgExt::CustomOp>([&](auto customOp) {
+        LDBG("CustomOp Config");
+        return setDefaultCustomOpLoweringConfig(entryPointFn, customOp,
+                                                initGPULaunchConfig);
       })
       .Default([&](auto op) {
         LDBG("Default Config");

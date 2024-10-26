@@ -67,8 +67,12 @@ LogicalResult ExpansionInfo::compute(OpTy op, OpOperand *fusableOpOperand,
   if (reassociationMaps.empty())
     return failure();
   AffineMap fusedIndexMap = op.getMatchingIndexingMap(fusableOpOperand);
-  SmallVector<int64_t, 4> originalLoopRange = op.getStaticLoopRanges();
-  originalLoopExtent.assign(originalLoopRange.begin(), originalLoopRange.end());
+  FailureOr<SmallVector<int64_t>> originalLoopRange = op.getStaticLoopRanges();
+  if (failed(originalLoopRange)) {
+    return failure();
+  }
+  originalLoopExtent.assign(originalLoopRange->begin(),
+                            originalLoopRange->end());
 
   reassociation.clear();
   expandedShapeMap.clear();
@@ -266,6 +270,9 @@ static std::optional<SmallVector<Value>> fuseAttentionWithReshapeByExpansion(
       expandedOpOperands[1], expandedOpOperands[2], expandedOpOperands[3],
       output, rewriter.getAffineMapArrayAttr(expandedOpIndexingMaps),
       maskOperand);
+
+  rewriter.inlineRegionBefore(attentionOp.getRegion(), fusedOp.getRegion(),
+                              fusedOp.getRegion().begin());
 
   // Reshape the result values to their original shape if this is a collapsing
   // reshape folded into its consumer.

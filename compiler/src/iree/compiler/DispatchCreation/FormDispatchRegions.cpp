@@ -547,6 +547,14 @@ isFusableWithConsumer(OpOperand &fusedOperand,
     return false;
   }
 
+  // TODO: Enable grouped convolution and depth wise pooling fusion.
+  // Rightnow, this is going through the default CPU pipeline and not through
+  // CONVTilingExpert.
+  if (isa<linalg::Conv2DNgchwFgchwOp, linalg::Conv2DNgchwGfchwOp,
+          linalg::PoolingNdhwcSumOp>(producer)) {
+    return false;
+  }
+
   auto producerFusionOp =
       dyn_cast<IREE::LinalgExt::LinalgFusionOpInterface>(producer);
   auto consumerFusionOp =
@@ -568,9 +576,15 @@ isFusableWithConsumer(OpOperand &fusedOperand,
   // TODO(#12664): This is unnecessary requirement, but we need a better config
   // to tile the consumer with a larger iteration space.
   if (!options.aggressiveFusion) {
-    auto producerIterationSpace = producerFusionOp.getStaticLoopRanges();
-    auto consumerIterationSpace = consumerFusionOp.getStaticLoopRanges();
-    if (producerIterationSpace.size() < consumerIterationSpace.size()) {
+    FailureOr<SmallVector<int64_t>> producerIterationSpace =
+        producerFusionOp.getStaticLoopRanges();
+    FailureOr<SmallVector<int64_t>> consumerIterationSpace =
+        consumerFusionOp.getStaticLoopRanges();
+    if (failed(producerIterationSpace) || failed(consumerIterationSpace)) {
+      return false;
+    }
+    if (producerIterationSpace.value().size() <
+        consumerIterationSpace.value().size()) {
       return false;
     }
   }

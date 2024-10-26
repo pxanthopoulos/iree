@@ -33,6 +33,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -60,6 +61,12 @@ struct ROCmOptions {
   int wavesPerEu = 0;
   std::string enableROCMUkernels = "none";
   bool legacySync = true;
+  bool slpVectorization = false;
+
+  /// List of LLVM opt pass pluggins to be loaded during GPU code
+  /// generation. The pluggins are paths to dynamic libraries that
+  /// are added to the LLVM pass manager.
+  SmallVector<std::string> passPlugins;
 
   void bindOptions(OptionsBinder &binder) {
     using namespace llvm;
@@ -95,6 +102,18 @@ struct ROCmOptions {
     binder.opt<bool>("iree-hip-legacy-sync", legacySync, cl::cat(category),
                      cl::desc("Enables 'legacy-sync' mode, which is required "
                               "for inline execution."));
+    binder.list<std::string>(
+        "iree-hip-pass-plugin-path", passPlugins,
+        cl::desc("LLVM pass plugins are out of tree libraries that implement "
+                 "LLVM opt passes. The library paths passed in this flag are "
+                 "to be passed to the target backend compiler during HIP "
+                 "executable serialization"),
+        cl::ZeroOrMore, cl::cat(category));
+    binder.opt<bool>(
+        "iree-hip-llvm-slp-vec", slpVectorization, cl::cat(category),
+        cl::desc(
+            "Enable slp vectorization in llvm opt. This can have an impact on "
+            "performance/numerics so its turned off by default currently."));
   }
 
   LogicalResult verify(mlir::Builder &builder) const {
@@ -272,7 +291,9 @@ public:
   // ones). Inspired by code section in
   // https://github.com/iree-org/iree/blob/main/compiler/plugins/target/CUDA/CUDATarget.cpp
   static void optimizeModule(llvm::Module &module,
-                             llvm::TargetMachine &targetMachine) {
+                             llvm::TargetMachine &targetMachine,
+                             ArrayRef<std::string> passPlugins,
+                             bool slpVectorization) {
     llvm::LoopAnalysisManager lam;
     llvm::FunctionAnalysisManager fam;
     llvm::CGSCCAnalysisManager cgam;
@@ -281,7 +302,7 @@ public:
     fam.registerPass([&] { return targetMachine.getTargetIRAnalysis(); });
 
     llvm::PipelineTuningOptions pto;
-    pto.SLPVectorization = false;
+    pto.SLPVectorization = slpVectorization;
 
     llvm::PassInstrumentationCallbacks pic;
 
@@ -295,6 +316,18 @@ public:
     pb.registerFunctionAnalyses(fam);
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    for (const std::string &pluginFileName : passPlugins) {
+      llvm::Expected<llvm::PassPlugin> pp =
+          llvm::PassPlugin::Load(pluginFileName);
+      if (pp) {
+        pp->registerPassBuilderCallbacks(pb);
+      } else {
+        std::string error = "unable to load plugin " + pluginFileName + ": " +
+                            llvm::toString(pp.takeError());
+        llvm::report_fatal_error(error.c_str());
+      }
+    }
 
     llvm::OptimizationLevel ol = llvm::OptimizationLevel::O2;
 
@@ -433,30 +466,36 @@ public:
         opt.UnsafeFPMath = false;
         opt.NoInfsFPMath = false;
         opt.NoNaNsFPMath = true;
-        std::string features;
+        SmallVector<std::string> features;
         if (targetArch.starts_with("gfx10") ||
             targetArch.starts_with("gfx11")) {
           switch (subgroupSize.value_or(64)) {
           case 32:
-            features = "+wavefrontsize32";
+            features.emplace_back("+wavefrontsize32");
             break;
           default:
           case 64:
-            features = "+wavefrontsize64";
+            features.emplace_back("+wavefrontsize64");
             break;
           }
         }
-        if (!targetFeatures.empty()) {
-          features += (features.empty() ? "" : ",") + targetFeatures.str();
-        }
+
         // Mixed precision fma instructions have complicated semantics on
         // gf9+ GPUs and can lead to numeric issues as seen in
         // https://github.com/iree-org/iree/issues/18746 so we disable this
         // feature.
-        features += "-fma-mix-insts";
+        if (targetArch.starts_with("gfx9")) {
+          features.emplace_back("-fma-mix-insts");
+        }
+
+        if (!targetFeatures.empty()) {
+          features.emplace_back(targetFeatures.str());
+        }
+
+        std::string featureStr = llvm::join(features, ",");
 
         targetMachine.reset(target->createTargetMachine(
-            triple.str(), targetArch, features, opt, llvm::Reloc::Model::PIC_,
+            triple.str(), targetArch, featureStr, opt, llvm::Reloc::Model::PIC_,
             std::nullopt, llvm::CodeGenOptLevel::Aggressive));
 
         if (!targetMachine) {
@@ -516,7 +555,8 @@ public:
       }
 
       // Run LLVM optimization passes.
-      optimizeModule(*llvmModule, *targetMachine);
+      optimizeModule(*llvmModule, *targetMachine, options.passPlugins,
+                     options.slpVectorization);
       if (!serOptions.dumpIntermediatesPath.empty()) {
         dumpModuleToPath(serOptions.dumpIntermediatesPath,
                          serOptions.dumpBaseName, variantOp.getName(),
