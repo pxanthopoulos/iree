@@ -10,7 +10,6 @@
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Interfaces/PartitionableLoopsInterface.h"
-#include "iree/compiler/Codegen/TransformStrategies/GPU/Strategies.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -44,11 +43,6 @@ constexpr unsigned numKTilesPerSubgroup = 2;
 constexpr int kMaxVectorNumBits = 128;
 
 namespace mlir::iree_compiler {
-
-llvm::cl::opt<bool> clSPIRVEnableTransformDialectJit(
-    "iree-spirv-enable-transform-dialect-jit",
-    llvm::cl::desc("Enable the usage of the transform dialect JIT"),
-    llvm::cl::init(false));
 
 using CodeGenPipeline = IREE::Codegen::DispatchLoweringPassPipeline;
 
@@ -890,6 +884,11 @@ setCooperativeMatrixConfig(IREE::GPU::TargetAttr target, linalg::LinalgOp op,
   Type lhsElem = getElementType(lhs);
   Type rhsElem = getElementType(rhs);
   Type initElem = getElementType(init);
+  // TODO(Max191): Support multiple M/N/K dimension problems for MMASchedules
+  // once the pipeline is able to support it. After adding multiple dimensions,
+  // all instances of schedule->m/nSubgroupCounts[0] and
+  // schedule->m/n/kTileSizes[0] need to use the full list of sizes instead of
+  // just the first element.
   GPUMatmulShapeType problem(dimM, dimN, dimK, lhsElem, rhsElem, initElem);
 
   SmallVector<GPUMatmulShapeType> intrinsics;
@@ -927,8 +926,9 @@ setCooperativeMatrixConfig(IREE::GPU::TargetAttr target, linalg::LinalgOp op,
 
   auto pipeline = CodeGenPipeline::SPIRVCooperativeMatrixVectorize;
 
-  std::array<int64_t, 3> workgroupSize{schedule->nWarpCount * subgroupSize,
-                                       schedule->mWarpCount, 1};
+  std::array<int64_t, 3> workgroupSize{schedule->nSubgroupCounts[0] *
+                                           subgroupSize,
+                                       schedule->mSubgroupCounts[0], 1};
 
   SmallVector<int64_t> vectorSizes(kIndex + 1, 0);
   if (isBM)
@@ -940,21 +940,23 @@ setCooperativeMatrixConfig(IREE::GPU::TargetAttr target, linalg::LinalgOp op,
   SmallVector<int64_t> subgroupTileSizes(lastParallelDim + 1, 0);
   if (isBM)
     subgroupTileSizes[bIndex] = 1;
-  subgroupTileSizes[mIndex] = schedule->mTileCount * vectorSizes[mIndex];
-  subgroupTileSizes[nIndex] = schedule->nTileCount * vectorSizes[nIndex];
+  subgroupTileSizes[mIndex] = schedule->mTileSizes[0] * vectorSizes[mIndex];
+  subgroupTileSizes[nIndex] = schedule->nTileSizes[0] * vectorSizes[nIndex];
 
   SmallVector<int64_t> workgroupTileSizes(lastParallelDim + 1, 0);
   if (isBM)
     workgroupTileSizes[bIndex] = 1;
-  workgroupTileSizes[mIndex] = schedule->mWarpCount * subgroupTileSizes[mIndex];
-  workgroupTileSizes[nIndex] = schedule->nWarpCount * subgroupTileSizes[nIndex];
+  workgroupTileSizes[mIndex] =
+      schedule->mSubgroupCounts[0] * subgroupTileSizes[mIndex];
+  workgroupTileSizes[nIndex] =
+      schedule->nSubgroupCounts[0] * subgroupTileSizes[nIndex];
 
   // Also create one level for reduction. This is needed because of
   // SPIRVTileAndPromotePass requires it.
   // TODO(#10499): Consolidate tiling configuration across different pipelines.
   SmallVector<int64_t> reductionTileSizes;
   reductionTileSizes.append(kIndex, 0);
-  reductionTileSizes.push_back(schedule->kTileCount * schedule->kSize);
+  reductionTileSizes.push_back(schedule->kTileSizes[0] * schedule->kSize);
 
   TileSizesListType tileSizes = {workgroupTileSizes, subgroupTileSizes,
                                  reductionTileSizes, vectorSizes};
@@ -962,7 +964,7 @@ setCooperativeMatrixConfig(IREE::GPU::TargetAttr target, linalg::LinalgOp op,
   // Don't do multibuffering if the inner reduction loop is folded out.
   auto pipelineDepth = softwarePipelineDepth;
   auto storeStage = softwarePipelineStoreStage;
-  if (schedule->kTileCount <= 1) {
+  if (schedule->kTileSizes[0] <= 1) {
     pipelineDepth = 0;
     storeStage = 0;
   }
@@ -1491,47 +1493,6 @@ static LogicalResult setDefaultOpConfig(IREE::GPU::TargetAttr target,
 }
 
 //===----------------------------------------------------------------------===//
-// Transform Dialect Specialized Configurations
-//===----------------------------------------------------------------------===//
-
-static LogicalResult
-setTransformDialectConfig(mlir::FunctionOpInterface entryPoint, Operation *op,
-                          IREE::GPU::TargetAttr target) {
-  if (!clSPIRVEnableTransformDialectJit) {
-    return failure();
-  }
-
-  MLIRContext *context = entryPoint.getContext();
-  auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
-      context, CodeGenPipeline::TransformDialectCodegen);
-
-  // TODO: unify the target information into one structure.
-  iree_compiler::gpu::GPUModel gpuModel;
-  gpuModel.hasWarpShuffle = target.supportsSubgroupShuffle();
-  gpuModel.hasTF32TensorCore = false;
-  gpuModel.hasMmaSync = false;
-  gpuModel.hasTF32TensorCore = false;
-  gpuModel.minSubgroupSize = target.getMinSubgroupSize();
-  gpuModel.maxSubgroupSize = target.getMaxSubgroupSize();
-  gpuModel.maxWorkGroupInvocations =
-      target.getWgp().getMaxThreadCountPerWorkgroup();
-
-  // Populates the supported WMMA fragment combinations from the target
-  // environment. Infer tf32 support from the list of supported fragment types.
-  for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
-    auto [mSize, nSize, kSize] = mma.getMNKShape();
-    auto [aType, bType, cType] = mma.getABCElementTypes();
-    gpuModel.supportedWMMAConfigs.emplace_back(iree_compiler::gpu::MMAConfig{
-        mSize, nSize, kSize, aType, bType, cType});
-  }
-
-  if (failed(iree_compiler::gpu::matchAndSetTransformStrategy(entryPoint, op,
-                                                              gpuModel)))
-    return failure();
-  return setTranslationInfo(entryPoint, translationInfo);
-}
-
-//===----------------------------------------------------------------------===//
 // Configuration Dispatcher
 //===----------------------------------------------------------------------===//
 
@@ -1540,11 +1501,6 @@ setTransformDialectConfig(mlir::FunctionOpInterface entryPoint, Operation *op,
 static LogicalResult setSPIRVOpConfig(IREE::GPU::TargetAttr target,
                                       mlir::FunctionOpInterface entryPointFn,
                                       Operation *rootOp) {
-  // First try to see if there is a matching transform dialect configuration.
-  if (succeeded(setTransformDialectConfig(entryPointFn, rootOp, target))) {
-    return success();
-  }
-
   // First try to find a proper CodeGen configuration to tile and vectorize for
   // the current target architecture.
   if (target.isAMD() && succeeded(detail::setAMDCodeGenConfig(target, rootOp)))

@@ -122,7 +122,7 @@ public:
 
   LogicalResult initialize(Operation *root) override;
 
-  LogicalResult visit(ProgramPoint point) override;
+  LogicalResult visit(ProgramPoint *point) override;
 
   void registerNewValue(Value val, const VectorLayoutInterface &layout);
 
@@ -147,7 +147,7 @@ public:
 
   LogicalResult initialize(Operation *root) override;
 
-  LogicalResult visit(ProgramPoint point) override;
+  LogicalResult visit(ProgramPoint *point) override;
 
   /// Register a new value to be part of the dataflow analysis. The value should
   /// not be part of the analysis already. This is used for new values that are
@@ -205,6 +205,7 @@ ChangeResult DistributionLayout::resolveWithPossibleConflict(
   if (!opOperand.get().hasOneUse() && !vectorLayout &&
       llvm::dyn_cast_or_null<arith::ConstantOp>(
           opOperand.get().getDefiningOp())) {
+    builder.setInsertionPoint(opOperand.get().getDefiningOp());
     Operation *copiedConstOp = builder.clone(*opOperand.get().getDefiningOp());
     Value copiedConst = copiedConstOp->getResult(0);
     builder.replaceAllUsesExcept(opOperand.get(), copiedConst,
@@ -308,7 +309,7 @@ void DistributionLayout::onUpdate(DataFlowSolver *solver) const {
   if (propagation) {
     // Make propagation run again on all users of this value.
     for (Operation *user : value.getUsers()) {
-      solver->enqueue({user, propagation});
+      solver->enqueue({solver->getProgramPointAfter(user), propagation});
     }
     // TODO: Maybe we need to run it on the parent operation as well to give
     // layout to other results? Seems unlikely though as results usually
@@ -318,17 +319,19 @@ void DistributionLayout::onUpdate(DataFlowSolver *solver) const {
   if (enforcement) {
     // Make enforcement run on the parent.
     if (Operation *definingOp = value.getDefiningOp()) {
-      solver->enqueue({definingOp, enforcement});
+      solver->enqueue({solver->getProgramPointAfter(definingOp), enforcement});
     } else {
       // TODO: This is not always correct. Ideally, we should enqueue all
       // predecessors of these block arguements.
-      solver->enqueue({value.getParentBlock()->getParentOp(), enforcement});
+      solver->enqueue(
+          {solver->getProgramPointAfter(value.getParentBlock()->getParentOp()),
+           enforcement});
     }
 
     // Enforce users of this value also, as some other operands may need to
     // be updated.
     for (Operation *user : value.getUsers()) {
-      solver->enqueue({user, enforcement});
+      solver->enqueue({solver->getProgramPointAfter(user), enforcement});
     }
   }
 }
@@ -849,8 +852,11 @@ LogicalResult PropagateLayout::initialize(Operation *root) {
   return success();
 }
 
-LogicalResult PropagateLayout::visit(ProgramPoint point) {
-  if (Operation *op = dyn_cast_or_null<Operation *>(point)) {
+LogicalResult PropagateLayout::visit(ProgramPoint *point) {
+  if (point->isBlockStart())
+    return success();
+
+  if (auto op = point->getPrevOp()) {
     visitOperation(op);
     return success();
   }
@@ -969,8 +975,11 @@ LogicalResult EnforceLayout::initialize(Operation *root) {
   return success();
 }
 
-LogicalResult EnforceLayout::visit(ProgramPoint point) {
-  if (Operation *op = dyn_cast_or_null<Operation *>(point)) {
+LogicalResult EnforceLayout::visit(ProgramPoint *point) {
+  if (point->isBlockStart())
+    return success();
+
+  if (auto op = point->getPrevOp()) {
     visitOperation(op);
     return success();
   }

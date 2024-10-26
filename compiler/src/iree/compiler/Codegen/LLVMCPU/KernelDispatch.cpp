@@ -11,7 +11,6 @@
 #include "iree/compiler/Codegen/Interfaces/PartitionableLoopsInterface.h"
 #include "iree/compiler/Codegen/LLVMCPU/TargetMLTransformInfo.h"
 #include "iree/compiler/Codegen/LLVMCPU/Utils.h"
-#include "iree/compiler/Codegen/TransformStrategies/CPU/Common.h"
 #include "iree/compiler/Codegen/Utils/CPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -98,12 +97,6 @@ static llvm::cl::opt<bool> clDisableArmSMETiling(
     "iree-llvmcpu-disable-arm-sme-tiling",
     llvm::cl::desc("Disables tiling for SME even if it is supported by the "
                    "target (i.e., when the +sme feature flag is present)"),
-    llvm::cl::init(false));
-
-// Non-static options are used in other places.
-llvm::cl::opt<bool> clEnableTransformDialectJit(
-    "iree-llvmcpu-enable-transform-dialect-jit",
-    llvm::cl::desc("enable the usage of the transform dialect JIT"),
     llvm::cl::init(false));
 
 using IREE::Codegen::DispatchLoweringPassPipeline;
@@ -799,11 +792,8 @@ static int getRegisterSpaceBitsIfKnown(IREE::HAL::ExecutableTargetAttr target) {
       return 16 * 128;
     }
   } else if (isAArch64(target)) {
-    // Can't determine register space size at compile time on SVE.
-    if (hasFeature(target, "+sve") || hasFeature(target, "+sve2")) {
-      return 0;
-    }
-    // 32 NEON registers (128-bit each).
+    // 32 NEON/SVE registers (at least 128-bit each, returns the base size for
+    // SVE).
     return 32 * 128;
   } else {
     // Don't know register space size as a compile-time constant on other
@@ -2007,28 +1997,6 @@ setDefaultGenericOpRootConfig(mlir::FunctionOpInterface entryPointFn,
       /*subgroupSize=*/{}, pipelineConfig);
 }
 
-/// Set lowering info to be used by the transform dialect jitter.
-static LogicalResult
-setTransformStrategyRootConfig(mlir::FunctionOpInterface entryPointFn,
-                               linalg::GenericOp genericOp,
-                               const LinalgOpInfo &linalgOpInfo,
-                               const TargetMLTransformInfo &targetMLTransInfo) {
-  assert(!getLoweringConfig(genericOp) &&
-         "expected lowering_config is not set");
-  if (!clEnableTransformDialectJit)
-    return failure();
-  cpu::CPUModel cpuModel;
-  if (failed(
-          cpu::matchAndSetReductionStrategy(entryPointFn, genericOp, cpuModel)))
-    return failure();
-  auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
-      entryPointFn->getContext(),
-      IREE::Codegen::DispatchLoweringPassPipeline::TransformDialectCodegen);
-  if (failed(setTranslationInfo(entryPointFn, translationInfo)))
-    return failure();
-  return success();
-}
-
 /// Utility to return the transpose vector `sizes` for X86. Empty `sizes` on
 /// return indicates failure.
 static void getTransposeX86VectorSizes(
@@ -2284,11 +2252,6 @@ setRootConfig(mlir::FunctionOpInterface entryPointFn,
               const TargetMLTransformInfo &targetMLTransInfo) {
   assert(!getLoweringConfig(genericOp) &&
          "expected lowering_config is not set");
-  // First, try to apply the transform dialect strategy, if defined.
-  if (succeeded(setTransformStrategyRootConfig(
-          entryPointFn, genericOp, linalgOpInfo, targetMLTransInfo))) {
-    return success();
-  }
 
   if (succeeded(setTransposeLikeOpRootConfig(
           entryPointFn, genericOp, linalgOpInfo, targetMLTransInfo))) {
@@ -2556,6 +2519,10 @@ setRootConfigImpl(mlir::FunctionOpInterface entryPointFn, Operation *op,
         .Case<linalg::GenericOp>([&](auto op) {
           return setRootConfig(entryPointFn, op, LinalgOpInfo(op),
                                targetMLTransInfo);
+        })
+        .Case<IREE::LinalgExt::CustomOp>([&](auto op) {
+          return setDefaultCustomOpLoweringConfig(entryPointFn, op,
+                                                  initCPULaunchConfig);
         })
         .Case<IREE::LinalgExt::AttentionOp, IREE::LinalgExt::FftOp,
               tensor::PackOp, tensor::PadOp, tensor::UnPackOp, linalg::Mmt4DOp,
@@ -3094,8 +3061,16 @@ setTranslationInfoAndRootConfig(mlir::FunctionOpInterface entryPointFn,
       return failure();
     }
 
-    // Set vector level tile sizes for other operations individually.
-    if (failed(setLoweringConfigForComputeOps(entryPointFn, computeOps,
+    // Avoid this for ops within a custom_op since those ops have already their
+    // configuration set.
+    auto prunedComputeOps =
+        llvm::to_vector(llvm::make_filter_range(computeOps, [](Operation *op) {
+          return !isa_and_nonnull<IREE::LinalgExt::CustomOp>(
+                     op->getParentOp()) ||
+                 getLoweringConfig<IREE::Codegen::LoweringConfigAttr>(op) ==
+                     nullptr;
+        }));
+    if (failed(setLoweringConfigForComputeOps(entryPointFn, prunedComputeOps,
                                               rootOperation))) {
       return failure();
     }

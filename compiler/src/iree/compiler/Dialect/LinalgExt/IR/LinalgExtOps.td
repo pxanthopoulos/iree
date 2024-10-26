@@ -94,7 +94,9 @@ let opDocGroup = OpGroupNonStructuredOps in {
 
 def IREELinalgExt_ScatterOp : IREELinalgExt_Op<"scatter",
     [DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
-     DeclareOpInterfaceMethods<LinalgFusionInterface>,
+     DeclareOpInterfaceMethods<LinalgFusionInterface,
+      ["getIndexingMapsForResults", "getIndexingMapsForOperands",
+       "getStaticLoopRanges"]>,
      DeclareOpInterfaceMethods<TilingInterface,
         ["generateScalarImplementation",
          "getIterationDomain",
@@ -467,9 +469,11 @@ def IREELinalgExt_TopkOp : IREELinalgExt_Op<"topk",[
 
 def IREELinalgExt_AttentionOp : IREELinalgExt_PureOp<"attention",
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     SingleBlockImplicitTerminator<"::mlir::iree_compiler::IREE::LinalgExt::YieldOp">,
      DestinationStyleOpInterface, LinalgExtInterface,
      DeclareOpInterfaceMethods<LinalgFusionInterface,
-      ["getIndexingMapsForResults", "getIndexingMapsForOperands"]>,
+      ["getIndexingMapsForResults", "getIndexingMapsForOperands",
+       "getStaticLoopRanges"]>,
      DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
      DeclareOpInterfaceMethods<TilingInterface,
       ["getIterationDomain",
@@ -499,6 +503,7 @@ def IREELinalgExt_AttentionOp : IREELinalgExt_PureOp<"attention",
                        AnyShaped:$output,
                        AffineMapArrayAttr:$indexing_maps
   );
+  let regions = (region SizedRegion<1>:$region);
 
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let hasVerifier = 1;
@@ -507,6 +512,7 @@ def IREELinalgExt_AttentionOp : IREELinalgExt_PureOp<"attention",
     attr-dict
     `ins` `(` $query `,` $key `,` $value `,` $scale (`,` $mask^)?  `:` type($query) `,` type($key) `,` type($value) `,` type($scale) (`,` type($mask)^ )?`)`
     `outs` `(` $output `:` type($output) `)`
+    $region
     (`->` type($results)^)?
   }];
 
@@ -527,8 +533,6 @@ def IREELinalgExt_AttentionOp : IREELinalgExt_PureOp<"attention",
     MutableOperandRange getDpsInitsMutable();
 
     SmallVector<AffineMap> getIndexingMapsArray();
-
-    SmallVector<int64_t, 4> getStaticLoopRanges();
 
     AffineMap getQueryMap() {
       return cast<AffineMap>(getIndexingMapsArray()[0]);
@@ -563,6 +567,7 @@ def IREELinalgExt_AttentionOp : IREELinalgExt_PureOp<"attention",
 
 def IREELinalgExt_OnlineAttentionOp : IREELinalgExt_PureOp<"online_attention",
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     SingleBlockImplicitTerminator<"::mlir::iree_compiler::IREE::LinalgExt::YieldOp">,
      DestinationStyleOpInterface, LinalgExtInterface,
      DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
      DeclareOpInterfaceMethods<AggregatedOpInterface, ["decomposeOperation"]>,
@@ -609,6 +614,7 @@ def IREELinalgExt_OnlineAttentionOp : IREELinalgExt_PureOp<"online_attention",
                        AnyShaped:$sum,
                        AffineMapArrayAttr:$indexing_maps
   );
+  let regions = (region SizedRegion<1>:$region);
 
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let hasVerifier = 1;
@@ -617,6 +623,7 @@ def IREELinalgExt_OnlineAttentionOp : IREELinalgExt_PureOp<"online_attention",
     attr-dict
     `ins` `(` $query `,` $key `,` $value `,` $scale (`,` $mask^)?  `:` type($query) `,` type($key) `,` type($value) `,` type($scale) (`,` type($mask)^ )?`)`
     `outs` `(` $output `,` $max `,` $sum `:` type($output) `,` type($max) `,` type($sum) `)`
+    $region
     (`->` type($results)^)?
   }];
 
@@ -1588,10 +1595,10 @@ def IREELinalgExt_CustomOp : IREELinalgExt_Op<"custom_op", [
   let assemblyFormat = [{
     `{` `indexing_maps` `=` $indexing_maps `,`
     `iterator_types` `=` $iterator_types `}`
+    attr-dict-with-keyword
     (`ins` `(` $inputs^ `:` type($inputs) `)`)?
     (`outs` `(` $outputs^ `:` type($outputs) `)`)?
-    $region
-    attr-dict (`->` type($results)^)?
+    $region (`->` type($results)^)?
   }];
 
   let extraClassDeclaration =[{

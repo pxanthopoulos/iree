@@ -1102,6 +1102,48 @@ void printShapedFunctionSignature(OpAsmPrinter &p, Operation *op,
 namespace mlir::iree_compiler::IREE::Util {
 
 //===----------------------------------------------------------------------===//
+// util.align
+//===----------------------------------------------------------------------===//
+
+void AlignOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
+                                SetIntRangeFn setResultRange) {
+  auto constantAlignment = argRanges[1].getConstantValue();
+  // Note that for non constant alignment, there may still be something we
+  // want to infer, but this is left for the future.
+  if (constantAlignment && !constantAlignment->isZero()) {
+    // We can align the range directly.
+    // (value + (alignment - 1)) & ~(alignment - 1)
+    // https://en.wikipedia.org/wiki/Data_structure_alignment#Computing_padding
+    APInt umin = argRanges[0].umin();
+    APInt umax = argRanges[0].umax();
+    APInt one(constantAlignment->getBitWidth(), 1);
+    APInt alignmentM1 = *constantAlignment - one;
+    APInt alignmentM1Inv = ~alignmentM1;
+    auto align = [&](APInt value, bool &invalid) -> APInt {
+      APInt aligned = (value + alignmentM1) & alignmentM1Inv;
+      // Detect overflow, which commonly happens at max range.
+      if (aligned.ult(value))
+        invalid = true;
+      return aligned;
+    };
+    bool invalid = false;
+    auto alignedUmin = align(umin, invalid);
+    auto alignedUmax = align(umax, invalid);
+    if (!invalid)
+      setResultRange(getResult(),
+                     ConstantIntRanges::fromUnsigned(alignedUmin, alignedUmax));
+  }
+}
+
+void AlignOp::inferResultDivisibility(ArrayRef<IntegerDivisibility> argDivs,
+                                      SetIntDivisibilityFn setResultDivs) {
+  auto alignmentDiv = argDivs[1];
+  if (alignmentDiv.isUninitialized())
+    return;
+  setResultDivs(getResult(), alignmentDiv.getValue());
+}
+
+//===----------------------------------------------------------------------===//
 // util.assume.int
 //===----------------------------------------------------------------------===//
 
@@ -1120,39 +1162,45 @@ AssumeIntOp::getOperandAssumptions(unsigned operandIndex) {
 std::pair<std::optional<uint64_t>, std::optional<uint64_t>>
 AssumeIntOp::getUnionedUnsignedRange(unsigned operandIndex) {
   auto assumptions = getOperandAssumptions(operandIndex);
-  std::optional<uint64_t> uminUnion;
-  std::optional<uint64_t> umaxUnion;
+  uint64_t uminUnion = std::numeric_limits<uint64_t>::max();
+  int uminCount = 0;
+  uint64_t umaxUnion = std::numeric_limits<uint64_t>::min();
+  int umaxCount = 0;
 
   for (auto assumption : assumptions) {
     auto umin = assumption.getUmin();
     auto umax = assumption.getUmax();
     if (umin) {
       uminUnion = std::min(
-          *umin, uminUnion ? *uminUnion : std::numeric_limits<uint64_t>::max());
+          *umin, uminUnion ? uminUnion : std::numeric_limits<uint64_t>::max());
+      uminCount += 1;
     }
     if (umax) {
       umaxUnion = std::max(
-          *umax, umaxUnion ? *umaxUnion : std::numeric_limits<uint64_t>::min());
+          *umax, umaxUnion ? umaxUnion : std::numeric_limits<uint64_t>::min());
+      umaxCount += 1;
     }
   }
-  return std::make_pair(uminUnion, umaxUnion);
+  return std::make_pair(uminCount > 0 && uminCount == assumptions.size()
+                            ? std::optional<uint64_t>(uminUnion)
+                            : std::nullopt,
+                        umaxCount > 0 && umaxCount == assumptions.size()
+                            ? std::optional<uint64_t>(umaxUnion)
+                            : std::nullopt);
 }
 
-// Gets the unioned divisor for an operand. If there are multiple divisor
-// assumptions, the gcd of all of them is returned. If there are no
-// divisor assumptions, std::nullopt is returned.
 std::optional<uint64_t>
 AssumeIntOp::getUnionedUnsignedDivisor(unsigned operandIndex) {
   auto assumptions = getOperandAssumptions(operandIndex);
   std::optional<uint64_t> divisorUnion;
   for (auto assumption : assumptions) {
     auto divisor = assumption.getUdiv();
-    if (divisor) {
-      if (divisorUnion)
-        divisorUnion = std::gcd(*divisor, *divisorUnion);
-      else
-        divisorUnion = *divisor;
-    }
+    if (!divisor)
+      return std::nullopt;
+    if (divisorUnion)
+      divisorUnion = std::gcd(*divisor, *divisorUnion);
+    else
+      divisorUnion = *divisor;
   }
   return divisorUnion;
 }
@@ -1224,6 +1272,9 @@ LogicalResult AssumeIntOp::verify() {
   for (auto [index, operandAssumptionsAttr] :
        llvm::enumerate(allOperandAssumptions)) {
     auto operandAssumptions = cast<ArrayAttr>(operandAssumptionsAttr);
+    // We always allow a single row to broadcast to any requested size.
+    if (operandAssumptions.size() == 1)
+      continue;
     if (rank && *rank != operandAssumptions.size())
       return emitOpError() << "expected operand #" << index << " to have "
                            << *rank << " assumptions but it has "
