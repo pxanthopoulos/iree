@@ -38,7 +38,7 @@ static Value createMul(Location loc, Value x, Value y, OpBuilder &builder) {
 
 namespace {
 
-using ControlFnTy = std::optional<std::function<bool(Operation *)>>;
+using ControlFnTy = std::function<bool(Operation *)>;
 
 // Convert linalg.conv_2d_nhwc_hwcf into linalg.generic (for img2col packing)
 // and linalg.matmul.
@@ -78,7 +78,8 @@ class ConvertConv2DNhwcHwcf final
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  ConvertConv2DNhwcHwcf(MLIRContext *context, ControlFnTy controlFn)
+  ConvertConv2DNhwcHwcf(MLIRContext *context,
+                        std::optional<ControlFnTy> controlFn)
       : OpRewritePattern<linalg::Conv2DNhwcHwcfOp>(context),
         controlFn(controlFn) {}
 
@@ -157,13 +158,8 @@ public:
     Value reshapedFilter = rewriter.create<tensor::CollapseShapeOp>(
         loc, reshapedFilterType, filter, filterReassocIndices);
 
-    AffineExpr bDim, m0Dim, m1Dim, nDim, kDim;
-    bindDims(getContext(), bDim, m0Dim, m1Dim, nDim, kDim);
-    auto lhsMap =
-        AffineMap::get(5, 0, {bDim, m0Dim, m1Dim, kDim}, getContext());
-    auto rhsMap = AffineMap::get(5, 0, {kDim, nDim}, getContext());
-    auto resultMap =
-        AffineMap::get(5, 0, {bDim, m0Dim, m1Dim, nDim}, getContext());
+    SmallVector<AffineMap> indexingMaps =
+        getIGEMMContractionIndexingMaps(convOp).value();
     auto parallel = utils::IteratorType::parallel;
     auto reduction = utils::IteratorType::reduction;
     SmallVector<utils::IteratorType> genericIterators = {
@@ -171,8 +167,7 @@ public:
     auto genericOp = rewriter.create<linalg::GenericOp>(
         loc, outputType,
         /*inputs=*/ValueRange{img2ColTensor, reshapedFilter},
-        /*outputs=*/ValueRange{output},
-        ArrayRef<AffineMap>{lhsMap, rhsMap, resultMap}, genericIterators,
+        /*outputs=*/ValueRange{output}, indexingMaps, genericIterators,
         [](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
           Value lhs = convertScalarToDtype(nestedBuilder, nestedLoc, args[0],
                                            args[2].getType(),
@@ -183,7 +178,8 @@ public:
           Value mul = createMul(nestedLoc, lhs, rhs, nestedBuilder);
           Value add = createAdd(nestedLoc, mul, args[2], nestedBuilder);
           nestedBuilder.create<linalg::YieldOp>(nestedLoc, add);
-        });
+        },
+        linalg::getPrunedAttributeList(convOp));
     Value result = genericOp.getResults().front();
 
     rewriter.replaceOp(convOp, result);
@@ -192,7 +188,7 @@ public:
   }
 
 private:
-  ControlFnTy controlFn;
+  std::optional<ControlFnTy> controlFn;
 };
 
 // For nchw, because the channels are to the left of the image shape dimensions,
@@ -204,7 +200,8 @@ class ConvertConv2DNchwFchw final
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  ConvertConv2DNchwFchw(MLIRContext *context, ControlFnTy controlFn)
+  ConvertConv2DNchwFchw(MLIRContext *context,
+                        std::optional<ControlFnTy> controlFn)
       : OpRewritePattern<linalg::Conv2DNchwFchwOp>(context),
         controlFn(controlFn) {}
 
@@ -279,13 +276,8 @@ public:
     Value reshapedFilter = rewriter.create<tensor::CollapseShapeOp>(
         loc, reshapedFilterType, filter, filterReassocIndices);
 
-    AffineExpr bDim, mDim, nDim0, nDim1, kDim;
-    bindDims(getContext(), bDim, mDim, nDim0, nDim1, kDim);
-    auto lhsMap = AffineMap::get(5, 0, {mDim, kDim}, getContext());
-    auto rhsMap =
-        AffineMap::get(5, 0, {bDim, nDim0, nDim1, kDim}, getContext());
-    auto resultMap =
-        AffineMap::get(5, 0, {bDim, mDim, nDim0, nDim1}, getContext());
+    SmallVector<AffineMap> indexingMaps =
+        getIGEMMContractionIndexingMaps(convOp).value();
     auto parallel = utils::IteratorType::parallel;
     auto reduction = utils::IteratorType::reduction;
     SmallVector<utils::IteratorType> genericIterators = {
@@ -293,8 +285,7 @@ public:
     auto genericOp = rewriter.create<linalg::GenericOp>(
         loc, outputType,
         /*inputs=*/ValueRange{reshapedFilter, img2ColTensor},
-        /*outputs=*/ValueRange{output},
-        ArrayRef<AffineMap>{lhsMap, rhsMap, resultMap}, genericIterators,
+        /*outputs=*/ValueRange{output}, indexingMaps, genericIterators,
         [](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
           Value lhs = convertScalarToDtype(nestedBuilder, nestedLoc, args[0],
                                            args[2].getType(),
@@ -305,7 +296,8 @@ public:
           Value mul = createMul(nestedLoc, lhs, rhs, nestedBuilder);
           Value add = createAdd(nestedLoc, mul, args[2], nestedBuilder);
           nestedBuilder.create<linalg::YieldOp>(nestedLoc, add);
-        });
+        },
+        linalg::getPrunedAttributeList(convOp));
     Value result = genericOp.getResults().front();
 
     rewriter.replaceOp(convOp, result);
@@ -314,7 +306,7 @@ public:
   }
 
 private:
-  ControlFnTy controlFn;
+  std::optional<ControlFnTy> controlFn;
 };
 
 struct ConvertConv2DToIm2ColOpPass final
@@ -335,7 +327,7 @@ struct ConvertConv2DToIm2ColOpPass final
 } // namespace
 
 void populateConv2DToIm2colOpPatterns(RewritePatternSet &patterns,
-                                      ControlFnTy controlFn) {
+                                      std::optional<ControlFnTy> controlFn) {
   patterns.insert<ConvertConv2DNhwcHwcf, ConvertConv2DNchwFchw>(
       patterns.getContext(), std::move(controlFn));
 }

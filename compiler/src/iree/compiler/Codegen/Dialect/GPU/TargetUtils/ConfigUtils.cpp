@@ -13,6 +13,8 @@
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
@@ -89,6 +91,7 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
   auto pipelineOptions = IREE::GPU::GPUPipelineOptionsAttr::get(
       context, /*prefetchSharedMemory=*/false,
       /*no_reduce_shared_memory_bank_conflicts=*/true,
+      /*use_igemm_convolution=*/false,
       /*reorder_workgroups_strategy=*/std::nullopt);
   pipelineAttrs.emplace_back(
       b.getStringAttr(IREE::GPU::GPUPipelineOptionsAttr::getDictKeyName()),
@@ -102,53 +105,13 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
       workgroupSize, targetSubgroupSize, pipelineConfig);
 }
 
-LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
-                                      mlir::FunctionOpInterface entryPoint,
-                                      Operation *op) {
-  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
-  if (!linalgOp || !linalg::isaContractionOpInterface(linalgOp)) {
-    return failure();
-  }
-
-  if (target.getWgp().getMma().empty())
-    return failure();
-
+/// Given a target and a matmul problem, try to find an MMA schedule for the
+/// problem based on the available mma intrinsics.
+static std::optional<GPUMMASchedule>
+getMmaScheduleFromProblemAndTarget(IREE::GPU::TargetAttr target,
+                                   GPUMatmulShapeType problem,
+                                   bool transposedLhs, bool transposedRhs) {
   const int64_t targetSubgroupSize = target.getPreferredSubgroupSize();
-
-  SmallVector<int64_t, 4> bounds = linalgOp.getStaticLoopRanges();
-  mlir::linalg::ContractionDimensions contractionDims =
-      mlir::linalg::inferContractionDims(linalgOp).value();
-
-  if (contractionDims.k.empty() || contractionDims.m.empty() ||
-      contractionDims.n.empty()) {
-    return failure();
-  }
-
-  // For now we are not being smart and trying to reshape dimensions to allow
-  // for better usage of intrinsics, and instead are tiling all dimensions
-  // except the inner most m, n, and k dimensions to 1.
-  int64_t mDim = contractionDims.m.back();
-  int64_t nDim = contractionDims.n.back();
-  int64_t kDim = contractionDims.k.back();
-
-  // Dynamic dims are expected to be taken care of earlier in the pipeline.
-  if (ShapedType::isDynamic(bounds[mDim]) ||
-      ShapedType::isDynamic(bounds[nDim]) ||
-      ShapedType::isDynamic(bounds[kDim])) {
-    return failure();
-  }
-
-  Value lhs = linalgOp.getDpsInputOperand(0)->get();
-  Value rhs = linalgOp.getDpsInputOperand(1)->get();
-  Value init = linalgOp.getDpsInitOperand(0)->get();
-
-  Type lhsElemType = getElementTypeOrSelf(lhs);
-  Type rhsElemType = getElementTypeOrSelf(rhs);
-  Type initElemType = getElementTypeOrSelf(init);
-
-  GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
-                             lhsElemType,  rhsElemType,  initElemType};
-
   SmallVector<GPUMatmulShapeType> intrinsics;
   for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
     auto [mSize, nSize, kSize] = mma.getMNKShape();
@@ -158,15 +121,19 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
     intrinsics.emplace_back(mSize, nSize, kSize, aType, bType, cType);
   }
   if (intrinsics.empty())
-    return failure();
+    return std::nullopt;
 
   GPUMMAHeuristicSeeds seeds;
-  int64_t inBitWidth = lhsElemType.getIntOrFloatBitWidth();
+  assert(problem.aType == problem.bType &&
+         "expected the same aType and bType.");
+  int64_t inBitWidth = problem.aType.getIntOrFloatBitWidth();
 
   // Note that the following heuristic seeds are just placeholder values.
   // We need to clean it up and make it adjusting to different targets.
   // See https://github.com/iree-org/iree/issues/16341 for details.
-  if (problem.mSize * problem.nSize <= 512 * 512) {
+  int64_t mSize = ShapedType::getNumElements(problem.mSizes);
+  int64_t nSize = ShapedType::getNumElements(problem.nSizes);
+  if (mSize * nSize <= 512 * 512) {
     // For matmuls with small M*N size, we want to distribute M*N onto more
     // workgroups to fill the GPU. Use a smaller bestMNTileCountPerSubgroup
     // and a larger bestKTileCountPerSubgroup.
@@ -184,18 +151,6 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
 
   int64_t maxSharedMemoryBytes = target.getWgp().getMaxWorkgroupMemoryBytes();
 
-  LDBG("Matmul TileAndFuse Config");
-
-  // Infer if lhs or rhs is transposed to help generate better schedule.
-  // TODO: Drop this. This is only a consideration for other pipelines.
-  SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
-  bool transposedLhs =
-      kDim !=
-      llvm::cast<AffineDimExpr>(maps[0].getResults().back()).getPosition();
-  bool transposedRhs =
-      nDim !=
-      llvm::cast<AffineDimExpr>(maps[1].getResults().back()).getPosition();
-
   // First try to find a schedule with an exactly matching intrinsic.
   std::optional<GPUMMASchedule> schedule =
       deduceMMASchedule(problem, intrinsics, seeds, maxSharedMemoryBytes,
@@ -206,27 +161,97 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
         problem, intrinsics, seeds, maxSharedMemoryBytes, targetSubgroupSize,
         transposedLhs, transposedRhs, /*canUpcastAcc=*/true);
   }
+  return schedule;
+}
+
+/// Create a matmul lowering config based on iteration bounds and indexing
+/// maps for a given target. This function computes contraction dimensions
+/// and deduces an MMA intrinsic schedule to choose tile sizes and the
+/// workgroup size.
+static FailureOr<std::pair<LoweringConfigAttr, int64_t>>
+getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
+                                        ArrayRef<AffineMap> maps,
+                                        ArrayRef<Value> operands,
+                                        IREE::GPU::TargetAttr target) {
+  if (target.getWgp().getMma().empty())
+    return failure();
+
+  mlir::linalg::ContractionDimensions contractionDims =
+      mlir::linalg::inferContractionDims(maps).value();
+
+  if (contractionDims.k.empty() || contractionDims.m.empty() ||
+      contractionDims.n.empty()) {
+    return failure();
+  }
+
+  // TODO(Max191): add dynamic shape support for inner most dims.
+  if (ShapedType::isDynamic(bounds[contractionDims.m.back()]) ||
+      ShapedType::isDynamic(bounds[contractionDims.n.back()]) ||
+      ShapedType::isDynamic(bounds[contractionDims.k.back()])) {
+    return failure();
+  }
+
+  // Gather all static M, N, and K dimensions to deduce the MMASchedule. Dynamic
+  // dimensions will be tiled to 1 in workgroup tiling, so they are ignored when
+  // computing an MMA schedule.
+  SmallVector<int64_t> mDims, nDims, kDims;
+  for (auto mDim : contractionDims.m) {
+    if (!ShapedType::isDynamic(bounds[mDim])) {
+      mDims.push_back(mDim);
+    }
+  }
+  for (auto nDim : contractionDims.n) {
+    if (!ShapedType::isDynamic(bounds[nDim])) {
+      nDims.push_back(nDim);
+    }
+  }
+  for (auto kDim : contractionDims.k) {
+    if (!ShapedType::isDynamic(bounds[kDim])) {
+      kDims.push_back(kDim);
+    }
+  }
+
+  auto getDimBounds = [&](SmallVector<int64_t> dims) -> SmallVector<int64_t> {
+    return llvm::map_to_vector(dims, [&](int64_t dim) { return bounds[dim]; });
+  };
+
+  assert(operands.size() == 3 && "expected 3 operands");
+  Value lhs = operands[0];
+  Value rhs = operands[1];
+  Value init = operands[2];
+
+  Type lhsElemType = getElementTypeOrSelf(lhs);
+  Type rhsElemType = getElementTypeOrSelf(rhs);
+  Type initElemType = getElementTypeOrSelf(init);
+
+  GPUMatmulShapeType problem{getDimBounds(mDims), getDimBounds(nDims),
+                             getDimBounds(kDims), lhsElemType,
+                             rhsElemType,         initElemType};
+
+  // Infer if lhs or rhs is transposed to help generate better schedule.
+  // TODO: Drop this. This is only a consideration for other pipelines.
+  bool transposedLhs =
+      kDims.back() !=
+      llvm::cast<AffineDimExpr>(maps[0].getResults().back()).getPosition();
+  bool transposedRhs =
+      nDims.back() !=
+      llvm::cast<AffineDimExpr>(maps[1].getResults().back()).getPosition();
+
+  std::optional<GPUMMASchedule> schedule = getMmaScheduleFromProblemAndTarget(
+      target, problem, transposedLhs, transposedRhs);
 
   if (!schedule) {
     LDBG("Failed to deduce TileAndFuse MMA schedule");
     return failure();
   }
 
+  const int64_t targetSubgroupSize = target.getPreferredSubgroupSize();
   LDBG("Target Subgroup size: " << targetSubgroupSize);
-  LDBG("Schedule: sizes [" << schedule->mSize << ", " << schedule->nSize << ", "
-                           << schedule->kSize << "]");
-  LDBG("Schedule: tile counts [" << schedule->mTileCount << ", "
-                                 << schedule->nTileCount << ", "
-                                 << schedule->kTileCount << "]");
-  LDBG("Schedule: warp counts [" << schedule->mWarpCount << ", "
-                                 << schedule->nWarpCount << "]");
+  LDBG("Schedule: " << schedule);
 
-  std::array<int64_t, 3> workgroupSize{
-      schedule->nWarpCount * targetSubgroupSize, schedule->mWarpCount, 1};
-
-  SmallVector<int64_t> workgroupTileSizes(linalgOp.getNumLoops(), 0);
-  SmallVector<int64_t> reductionTileSizes(linalgOp.getNumLoops(), 0);
-  SmallVector<int64_t> subgroupTileSizes(linalgOp.getNumLoops(), 0);
+  SmallVector<int64_t> workgroupTileSizes(bounds.size(), 0);
+  SmallVector<int64_t> reductionTileSizes(bounds.size(), 0);
+  SmallVector<int64_t> subgroupTileSizes(bounds.size(), 0);
   // Tile all batch dimensions with unit size.
   for (int64_t batch : contractionDims.batch) {
     workgroupTileSizes[batch] = 1;
@@ -244,23 +269,37 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
     reductionTileSizes[k] = 1;
   }
 
-  // Compute the M/N dimension tile size by multiplying subgroup information.
-  workgroupTileSizes[mDim] = schedule->mWarpCount * schedule->mTileCount;
-  workgroupTileSizes[nDim] = schedule->nWarpCount * schedule->nTileCount;
+  // Adjust the inner bound size for packing to intrinsic shapes, since tiling
+  // happens after packing.
+  assert(bounds[mDims.back()] % schedule->mSize == 0 &&
+         bounds[nDims.back()] % schedule->nSize == 0 &&
+         "expected inner bound to be evenly divisible by schedule sizes.");
+  bounds[mDims.back()] /= schedule->mSize;
+  bounds[nDims.back()] /= schedule->nSize;
 
-  // Specify the subgroup tile sizes from the mma schedule. This is applied
-  subgroupTileSizes[mDim] = schedule->mTileCount;
-  subgroupTileSizes[nDim] = schedule->nTileCount;
+  // Compute the M/N dimension tile sizes by multiplying subgroup information.
+  for (auto [i, mDim] : llvm::enumerate(mDims)) {
+    workgroupTileSizes[mDim] =
+        schedule->mSubgroupCounts[i] * schedule->mTileSizes[i];
+    subgroupTileSizes[mDim] = schedule->mTileSizes[i];
+  }
+  for (auto [i, nDim] : llvm::enumerate(nDims)) {
+    workgroupTileSizes[nDim] =
+        schedule->nSubgroupCounts[i] * schedule->nTileSizes[i];
+    subgroupTileSizes[nDim] = schedule->nTileSizes[i];
+  }
 
   // Similarly the reduction tile size is just the post-packing tile count.
-  reductionTileSizes[kDim] = schedule->kTileCount;
+  for (auto [i, kDim] : llvm::enumerate(kDims)) {
+    reductionTileSizes[kDim] = schedule->kTileSizes[i];
+  }
 
   IREE::GPU::MmaInterfaceAttr mmaKind =
       target.getWgp().getMma()[schedule->index];
 
   // Attach the MMA schedule as an attribute to the entry point export function
   // for later access in the pipeline.
-  MLIRContext *context = linalgOp.getContext();
+  MLIRContext *context = lhs.getContext();
   SmallVector<NamedAttribute, 1> attrs;
   Builder b(context);
   attrs.emplace_back(StringAttr::get(context, "workgroup"),
@@ -273,17 +312,105 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
   GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
   auto configDict = DictionaryAttr::get(context, attrs);
   auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
+  int64_t flatWorkgroupSize =
+      targetSubgroupSize *
+      ShapedType::getNumElements(schedule->nSubgroupCounts) *
+      ShapedType::getNumElements(schedule->mSubgroupCounts);
+
+  return std::make_pair(loweringConfig, flatWorkgroupSize);
+}
+
+LogicalResult
+setIGEMMConvolutionLoweringConfig(IREE::GPU::TargetAttr target,
+                                  mlir::FunctionOpInterface entryPoint,
+                                  Operation *op) {
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp || !linalg::isaConvolutionOpInterface(linalgOp)) {
+    return failure();
+  }
+
+  if (target.getWgp().getMma().empty())
+    return failure();
+
+  LDBG("IGEMM TileAndFuse Config");
+  FailureOr<SmallVector<AffineMap>> igemmContractionMaps =
+      LinalgExt::getIGEMMContractionIndexingMaps(linalgOp);
+  FailureOr<SmallVector<int64_t>> igemmLoopBounds =
+      LinalgExt::getIGEMMLoopBounds(linalgOp);
+  FailureOr<SmallVector<Value>> igemmOperands =
+      LinalgExt::getIGEMMOperands(linalgOp);
+  if (failed(igemmContractionMaps) || failed(igemmLoopBounds) ||
+      failed(igemmOperands)) {
+    LDBG("Unsupported convolution type");
+    return failure();
+  }
+
+  SmallVector<int64_t> bounds = igemmLoopBounds.value();
+  FailureOr<std::pair<LoweringConfigAttr, int64_t>> configAndWgSize =
+      getMatmulLoweringConfigAndWorkgroupSize(
+          bounds, igemmContractionMaps.value(), igemmOperands.value(), target);
+  if (failed(configAndWgSize)) {
+    return failure();
+  }
+  std::array<int64_t, 3> workgroupSize = {configAndWgSize->second, 1, 1};
+  LoweringConfigAttr loweringConfig = configAndWgSize->first;
 
   SmallVector<NamedAttribute, 1> pipelineAttrs;
   auto pipelineOptions = IREE::GPU::GPUPipelineOptionsAttr::get(
-      context, /*prefetchSharedMemory=*/true,
+      linalgOp->getContext(), /*prefetchSharedMemory=*/true,
       /*no_reduce_shared_memory_bank_conflicts=*/false,
+      /*use_igemm_convolution=*/true,
       /*reorder_workgroups_strategy=*/std::nullopt);
   pipelineAttrs.emplace_back(
-      StringAttr::get(context,
+      StringAttr::get(linalgOp->getContext(),
                       IREE::GPU::GPUPipelineOptionsAttr::getDictKeyName()),
       pipelineOptions);
-  auto pipelineConfig = DictionaryAttr::get(context, pipelineAttrs);
+  auto pipelineConfig =
+      DictionaryAttr::get(linalgOp->getContext(), pipelineAttrs);
+  const int64_t targetSubgroupSize = target.getPreferredSubgroupSize();
+
+  // TODO(qedawkins): Use a shared pipeline identifier here.
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPoint, op, loweringConfig,
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
+      workgroupSize, targetSubgroupSize, pipelineConfig);
+}
+
+LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
+                                      mlir::FunctionOpInterface entryPoint,
+                                      Operation *op) {
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp || !linalg::isaContractionOpInterface(linalgOp)) {
+    return failure();
+  }
+
+  SmallVector<int64_t> bounds = linalgOp.getStaticLoopRanges();
+  SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
+  SmallVector<Value> operands(linalgOp->getOperands());
+
+  LDBG("Matmul TileAndFuse Config");
+
+  FailureOr<std::pair<LoweringConfigAttr, int64_t>> configAndWgSize =
+      getMatmulLoweringConfigAndWorkgroupSize(bounds, maps, operands, target);
+  if (failed(configAndWgSize)) {
+    return failure();
+  }
+  std::array<int64_t, 3> workgroupSize = {configAndWgSize->second, 1, 1};
+  LoweringConfigAttr loweringConfig = configAndWgSize->first;
+
+  SmallVector<NamedAttribute, 1> pipelineAttrs;
+  auto pipelineOptions = IREE::GPU::GPUPipelineOptionsAttr::get(
+      linalgOp->getContext(), /*prefetchSharedMemory=*/true,
+      /*no_reduce_shared_memory_bank_conflicts=*/false,
+      /*use_igemm_convolution=*/false,
+      /*reorder_workgroups_strategy=*/std::nullopt);
+  pipelineAttrs.emplace_back(
+      StringAttr::get(linalgOp->getContext(),
+                      IREE::GPU::GPUPipelineOptionsAttr::getDictKeyName()),
+      pipelineOptions);
+  auto pipelineConfig =
+      DictionaryAttr::get(linalgOp->getContext(), pipelineAttrs);
+  const int64_t targetSubgroupSize = target.getPreferredSubgroupSize();
 
   // TODO(qedawkins): Use a shared pipeline identifier here.
   return setOpConfigAndEntryPointFnTranslation(
@@ -612,6 +739,10 @@ getPipelineOptions(FunctionOpInterface funcOp,
       pipelineOptions.enableReduceSharedMemoryBankConflicts =
           !noReduceBankConflicts.getValue();
     }
+    BoolAttr useIgemmConvolution = pipelineOptionsAttr.getUseIgemmConvolution();
+    if (useIgemmConvolution) {
+      pipelineOptions.useIgemmConvolution = useIgemmConvolution.getValue();
+    }
     ReorderWorkgroupsStrategyAttr reorderWorkgroupsStrategy =
         pipelineOptionsAttr.getReorderWorkgroupsStrategy();
     if (reorderWorkgroupsStrategy) {
@@ -648,6 +779,7 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
   return os << "{" << "enableReduceSharedMemoryBankConflicts = "
             << options.enableReduceSharedMemoryBankConflicts << ", "
             << ", prefetchSharedMemory = " << options.prefetchSharedMemory
+            << ", useIgemmConvolution = " << options.useIgemmConvolution
             << ", reorderWorkgroupsStrategy = " << reorderStr
             << ", enableUkernels = " << options.enableUkernels << "}";
 }
