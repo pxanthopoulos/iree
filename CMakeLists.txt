@@ -1137,7 +1137,7 @@ ExternalProject_Add(scotch
         -DCMAKE_C_FLAGS="-Wno-deprecated-non-prototype"
         -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
     BUILD_COMMAND
-        cmake --build ${CMAKE_BINARY_DIR}/third_party/scotch/build -j ${CMAKE_BUILD_PARALLEL_LEVEL}
+        cmake --build ${CMAKE_BINARY_DIR}/third_party/scotch/build -j 1
     INSTALL_COMMAND
         cmake --install ${CMAKE_BINARY_DIR}/third_party/scotch/build
     BUILD_IN_SOURCE 0
