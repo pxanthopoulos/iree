@@ -99,3 +99,5 @@ artifacts/
 
 iree-build/
 workspace/
+
+third_party/scotch-master

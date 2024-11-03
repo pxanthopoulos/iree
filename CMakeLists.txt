@@ -1118,3 +1118,62 @@ iree_add_install_target(
   COMPONENT IREETools-Runtime
   ADD_TO iree-install-tools
 )
+
+include(ExternalProject)
+
+ExternalProject_Add(scotch
+    URL https://gitlab.inria.fr/scotch/scotch/-/archive/master/scotch-master.tar.gz
+    URL_HASH SHA256=43ac2fe4f3687d42c888436db326076d6280e1cd1daba9ea88681a247ef8c9ec
+    PREFIX ${CMAKE_BINARY_DIR}/third_party/scotch
+    CONFIGURE_COMMAND
+        cmake -G ${CMAKE_GENERATOR}
+        -B ${CMAKE_BINARY_DIR}/third_party/scotch/build
+        -S <SOURCE_DIR>
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+        -DBUILD_SHARED_LIBS=OFF
+        -DBUILD_PTSCOTCH=OFF
+        -DCMAKE_C_FLAGS="-Wno-deprecated-non-prototype"
+        -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+    BUILD_COMMAND
+        cmake --build ${CMAKE_BINARY_DIR}/third_party/scotch/build -j ${CMAKE_BUILD_PARALLEL_LEVEL}
+    INSTALL_COMMAND
+        cmake --install ${CMAKE_BINARY_DIR}/third_party/scotch/build
+    BUILD_IN_SOURCE 0
+)
+
+file(WRITE "${CMAKE_BINARY_DIR}/third_party/dagP/config.py" 
+"import os
+scotch            = 1
+debug             = 1
+debug_flags       = '-ggdb3'
+m64               = 1
+CC                = '${CMAKE_C_COMPILER}'
+CXX               = '${CMAKE_CXX_COMPILER}'
+LINK              = '${CMAKE_CXX_COMPILER}'
+defines           = '_DUMP_HYPERGRAPH'
+CCFLAGS           = '-Wall -Wno-bad-function-cast -Wno-cast-qual -Wno-sign-conversion -Wno-padded -Wno-missing-prototypes -Wno-reserved-id-macro'
+CXXFLAGS          = '-std=c++11'
+extincludes       = '${CMAKE_BINARY_DIR}/third_party/scotch/include'
+extlibs           = 'scotch scotcherr'
+extlibpath        = '${CMAKE_BINARY_DIR}/third_party/scotch/lib'"
+)
+
+ExternalProject_Add(dagP
+    DEPENDS scotch
+    GIT_REPOSITORY https://github.com/GT-TDAlab/dagP.git
+    GIT_TAG master
+    PREFIX ${CMAKE_BINARY_DIR}/third_party/dagP
+    CONFIGURE_COMMAND
+      cmake -E env cp
+        ${CMAKE_BINARY_DIR}/third_party/dagP/config.py
+        <SOURCE_DIR>/config.py
+    BUILD_COMMAND
+      scons
+    INSTALL_COMMAND
+        cmake -E copy_directory
+        <SOURCE_DIR>/lib
+        <INSTALL_DIR>/lib
+    BUILD_IN_SOURCE 1
+)
