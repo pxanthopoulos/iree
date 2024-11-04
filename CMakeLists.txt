@@ -1134,13 +1134,18 @@ ExternalProject_Add(scotch
         -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
         -DBUILD_SHARED_LIBS=OFF
         -DBUILD_PTSCOTCH=OFF
-        -DCMAKE_C_FLAGS="-Wno-deprecated-non-prototype"
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_C_FLAGS=-fPIC
+        -DCMAKE_C_FLAGS_DEBUG=-Wno-deprecated-non-prototype
         -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
     BUILD_COMMAND
         cmake --build ${CMAKE_BINARY_DIR}/third_party/scotch/build -j 1
     INSTALL_COMMAND
         cmake --install ${CMAKE_BINARY_DIR}/third_party/scotch/build
     BUILD_IN_SOURCE 0
+    BUILD_BYPRODUCTS 
+        ${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotch.a
+        ${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotcherr.a
 )
 
 file(WRITE "${CMAKE_BINARY_DIR}/third_party/dagP/config.py" 
@@ -1154,13 +1159,13 @@ CXX               = '${CMAKE_CXX_COMPILER}'
 LINK              = '${CMAKE_CXX_COMPILER}'
 defines           = '_DUMP_HYPERGRAPH'
 CCFLAGS           = '-Wall -Wno-bad-function-cast -Wno-cast-qual -Wno-sign-conversion -Wno-padded -Wno-missing-prototypes -Wno-reserved-id-macro'
-CXXFLAGS          = '-std=c++11'
+CXXFLAGS          = '-std=c++11 -fPIC'
 extincludes       = '${CMAKE_BINARY_DIR}/third_party/scotch/include'
 extlibs           = 'scotch scotcherr'
 extlibpath        = '${CMAKE_BINARY_DIR}/third_party/scotch/lib'"
 )
 
-ExternalProject_Add(dagP
+ExternalProject_Add(dagP-external
     DEPENDS scotch
     GIT_REPOSITORY https://github.com/GT-TDAlab/dagP.git
     GIT_TAG master
@@ -1176,4 +1181,28 @@ ExternalProject_Add(dagP
         <SOURCE_DIR>/lib
         <INSTALL_DIR>/lib
     BUILD_IN_SOURCE 1
+    BUILD_BYPRODUCTS 
+        ${CMAKE_BINARY_DIR}/third_party/dagP/lib/libdagp.a
+)
+
+add_library(scotch-imported STATIC IMPORTED GLOBAL)
+add_dependencies(scotch-imported scotch)
+set_target_properties(scotch-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotch.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/third_party/scotch/include"
+)
+
+add_library(scotcherr-imported STATIC IMPORTED GLOBAL)
+add_dependencies(scotcherr-imported scotch)
+set_target_properties(scotcherr-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotcherr.a"
+)
+
+add_library(dagP STATIC IMPORTED GLOBAL)
+add_dependencies(dagP dagP-external)
+
+set_target_properties(dagP PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/dagP/lib/libdagp.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/third_party/dagP/src/dagP-external/src/recBisection/;${CMAKE_BINARY_DIR}/third_party/dagP/src/dagP-external/src/common/"
+    INTERFACE_LINK_LIBRARIES "scotch-imported;scotcherr-imported"
 )
