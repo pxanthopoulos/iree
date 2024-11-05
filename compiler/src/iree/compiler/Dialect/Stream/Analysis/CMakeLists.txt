@@ -24,6 +24,7 @@ iree_cc_library(
     "Partitioning/ReferencePartitioning.cpp"
     "ResourceHazards.cpp"
     "ResourceUsage.cpp"
+    "Partitioning/MemoryAwarePartitioning.cpp"
   DEPS
     LLVMSupport
     MLIRAnalysis
@@ -38,6 +39,8 @@ iree_cc_library(
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::IR
+    iree::compiler::Dialect::HAL::IR
+    dagP
   PUBLIC
 )
 

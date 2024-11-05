@@ -169,7 +169,9 @@ void PartitionSet::topologicalSort() {
 PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
                                     Block *block) {
   // Only one algorithm today.
-  return partitionStreamableOpsReference(config, block);
+  PartitionSet partitions = partitionStreamableOpsReference(config, block);
+  PartitionSet memAwarePartitions = memoryAwarePartition(partitions);
+  return partitions;
 }
 
 PartitionSet
