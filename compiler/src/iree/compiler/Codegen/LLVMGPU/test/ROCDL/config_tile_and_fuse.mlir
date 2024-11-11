@@ -1,5 +1,6 @@
 // RUN: iree-opt --mlir-print-local-scope --split-input-file --iree-gpu-test-target=gfx940 \
 // RUN: --iree-codegen-llvmgpu-test-tile-and-fuse-matmul=true --iree-codegen-llvmgpu-test-tile-and-fuse-vectorize=true \
+// RUN: --iree-codegen-llvmgpu-use-igemm=false \
 // RUN: --pass-pipeline="builtin.module(iree-llvmgpu-select-lowering-strategy)" %s | FileCheck %s
 
 // TODO: This test is still using the legacy LLVMGPU kernel config. This needs
@@ -205,10 +206,8 @@ module @elementwise_unaligned {
   }
 }
 
-// Verify that this does not select this pipeline due to issues with resolving
-// dynamic scf.forall loops.
-// CHECK-LABEL: module @elementwise_unaligned
-//  CHECK-NOT:   LLVMGPUTileAndFuse
+// CHECK-LABEL: func.func @elementwise_unaligned
+//  CHECK-SAME:   #iree_codegen.translation_info<LLVMGPUTileAndFuse workgroup_size = [64, 1, 1] subgroup_size = 64>
 
 // -----
 
@@ -224,7 +223,7 @@ module @elementwise_large_rank {
 // Verify that a lowering config is set on large rank tensors with unaligned
 // shapes.
 // CHECK-LABEL: func.func @elementwise_large_rank
-//  CHECK-SAME:   #iree_codegen.translation_info<LLVMGPUVectorize workgroup_size = [128, 1, 1] subgroup_size = 64>
+//  CHECK-SAME:   #iree_codegen.translation_info<LLVMGPUTileAndFuse workgroup_size = [64, 1, 1] subgroup_size = 64>
 
 // -----
 

@@ -133,6 +133,9 @@ def MFMA_F32_16x16x16_BF16  : I32EnumAttrCase<"MFMA_F32_16x16x16_BF16", 0x0920>;
 def MFMA_F32_32x32x8_BF16  : I32EnumAttrCase<"MFMA_F32_32x32x8_BF16", 0x0921>;
 def MFMA_F32_16x16x32_F8E5M2FNUZ  : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E5M2FNUZ", 0x0930>;
 def MFMA_F32_16x16x32_F8E4M3FNUZ  : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E4M3FNUZ", 0x0940>;
+// V-Intrinsic below interleaves read from K-dim from one 8xF8 to two 4xF8.
+// (Useful in F8 chained-MM to align B-layout of 2nd MM to C-layout of 1st MM)
+def VMFMA_F32_16x16x32_F8E4M3FNUZ  : I32EnumAttrCase<"VMFMA_F32_16x16x32_F8E4M3FNUZ", 0x0941>;
 def MFMA_I32_16x16x32_I8  : I32EnumAttrCase<"MFMA_I32_16x16x32_I8", 0x0980>;
 def MFMA_I32_32x32x16_I8  : I32EnumAttrCase<"MFMA_I32_32x32x16_I8", 0x0981>;
 
@@ -153,8 +156,6 @@ def IREEGPU_MMAIntrinsic : IREEGPU_I32MmaEnumAttr<"MMAIntrinsic",
       MFMA_F32_16x16x4_F32,
       MFMA_F32_16x16x16_F16,
       MFMA_F32_32x32x8_F16,
-      VMFMA_F32_16x16x32_F16,
-      VMFMA_F32_32x32x16_F16,
       MFMA_F32_16x16x16_BF16,
       MFMA_F32_32x32x8_BF16,
       MFMA_F32_16x16x32_F8E4M3FNUZ,
@@ -166,6 +167,13 @@ def IREEGPU_MMAIntrinsic : IREEGPU_I32MmaEnumAttr<"MMAIntrinsic",
       WMMA_F32_16x16x16_F16,
       WMMA_F16_16x16x16_F16,
       WMMA_I32_16x16x16_I8
+    ]>;
+
+def IREEGPU_VirtualMMAIntrinsic : IREEGPU_I32MmaEnumAttr<"VirtualMMAIntrinsic",
+    "Descriptor for different Virtual MMA intrinsics", [
+      VMFMA_F32_16x16x32_F16,
+      VMFMA_F32_32x32x16_F16,
+      VMFMA_F32_16x16x32_F8E4M3FNUZ,
     ]>;
 
 def MMA_LHS : I32EnumAttrCase<"Lhs", 0>;
