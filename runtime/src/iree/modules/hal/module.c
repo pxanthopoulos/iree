@@ -781,9 +781,8 @@ IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_begin_debug_group,  //
       .file = iree_string_view_empty(),
       .line = 0,
   };
-  iree_hal_command_buffer_begin_debug_group(
+  return iree_hal_command_buffer_begin_debug_group(
       command_buffer, label_str, iree_hal_label_color_unspecified(), &location);
-  return iree_ok_status();
 }
 
 IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_end_debug_group,  //
@@ -792,8 +791,7 @@ IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_end_debug_group,  //
   iree_hal_command_buffer_t* command_buffer = NULL;
   IREE_RETURN_IF_ERROR(
       iree_hal_command_buffer_check_deref(args->r0, &command_buffer));
-  iree_hal_command_buffer_end_debug_group(command_buffer);
-  return iree_ok_status();
+  return iree_hal_command_buffer_end_debug_group(command_buffer);
 }
 
 IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_execution_barrier,  //
@@ -834,9 +832,9 @@ IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_fill_buffer,  //
       iree_hal_buffer_check_deref_or_null(args->r1, &target_ref.buffer));
   uint32_t pattern = (uint32_t)args->i5;
   uint32_t pattern_length = (uint32_t)args->i6;
-
+  iree_hal_fill_flags_t flags = IREE_HAL_FILL_FLAG_NONE;
   return iree_hal_command_buffer_fill_buffer(command_buffer, target_ref,
-                                             &pattern, pattern_length);
+                                             &pattern, pattern_length, flags);
 }
 
 IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_update_buffer,  //
@@ -855,13 +853,13 @@ IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_update_buffer,  //
       target_buffer_slot, target_offset, length);
   IREE_RETURN_IF_ERROR(
       iree_hal_buffer_check_deref_or_null(args->r3, &target_ref.buffer));
-
   iree_const_byte_span_t source_span = iree_const_byte_span_empty();
   IREE_RETURN_IF_ERROR(iree_vm_buffer_map_ro(
       source_buffer, source_offset, (iree_host_size_t)length, 1, &source_span));
-
+  iree_hal_update_flags_t flags = IREE_HAL_UPDATE_FLAG_NONE;
   return iree_hal_command_buffer_update_buffer(command_buffer, source_span.data,
-                                               /*source_offset=*/0, target_ref);
+                                               /*source_offset=*/0, target_ref,
+                                               flags);
 }
 
 IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_copy_buffer,  //
@@ -883,9 +881,9 @@ IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_copy_buffer,  //
       iree_hal_buffer_check_deref_or_null(args->r3, &source_ref.buffer));
   IREE_RETURN_IF_ERROR(
       iree_hal_buffer_check_deref_or_null(args->r5, &target_ref.buffer));
-
+  iree_hal_copy_flags_t flags = IREE_HAL_COPY_FLAG_NONE;
   return iree_hal_command_buffer_copy_buffer(command_buffer, source_ref,
-                                             target_ref);
+                                             target_ref, flags);
 }
 
 IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_collective,  //
@@ -911,7 +909,6 @@ IREE_VM_ABI_EXPORT(iree_hal_module_command_buffer_collective,  //
   IREE_RETURN_IF_ERROR(
       iree_hal_buffer_check_deref_or_null(args->r7, &recv_ref.buffer));
   iree_device_size_t element_count = iree_hal_cast_device_size(args->i12);
-
   return iree_hal_command_buffer_collective(command_buffer, channel, op, param,
                                             send_ref, recv_ref, element_count);
 }
@@ -1199,6 +1196,77 @@ IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_dealloca,  //
       iree_hal_fence_semaphore_list(signal_fence), buffer);
 }
 
+IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_fill,  //
+                   iree_hal_module_state_t,            //
+                   rIrrrIIIiI, v) {
+  iree_hal_device_t* device = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_device_check_deref(args->r0, &device));
+  iree_hal_queue_affinity_t queue_affinity =
+      (iree_hal_queue_affinity_t)args->i1;
+  iree_hal_fence_t* wait_fence = iree_hal_fence_deref(args->r2);
+  iree_hal_fence_t* signal_fence = iree_hal_fence_deref(args->r3);
+  iree_hal_buffer_t* target_buffer = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_check_deref(args->r4, &target_buffer));
+  iree_device_size_t target_offset = iree_hal_cast_device_size(args->i5);
+  iree_device_size_t length = iree_hal_cast_device_size(args->i6);
+  uint64_t pattern = args->i7;
+  iree_host_size_t pattern_length = iree_hal_cast_host_size(args->i8);
+  iree_hal_fill_flags_t flags = (iree_hal_fill_flags_t)args->i9;
+  return iree_hal_device_queue_fill(
+      device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
+      iree_hal_fence_semaphore_list(signal_fence), target_buffer, target_offset,
+      length, &pattern, pattern_length, flags);
+}
+
+IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_update,  //
+                   iree_hal_module_state_t,              //
+                   rIrrrIrIII, v) {
+  iree_hal_device_t* device = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_device_check_deref(args->r0, &device));
+  iree_hal_queue_affinity_t queue_affinity =
+      (iree_hal_queue_affinity_t)args->i1;
+  iree_hal_fence_t* wait_fence = iree_hal_fence_deref(args->r2);
+  iree_hal_fence_t* signal_fence = iree_hal_fence_deref(args->r3);
+  iree_vm_buffer_t* source_buffer = NULL;
+  IREE_RETURN_IF_ERROR(iree_vm_buffer_check_deref(args->r4, &source_buffer));
+  iree_host_size_t source_offset = iree_hal_cast_host_size(args->i5);
+  iree_hal_buffer_t* target_buffer = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_check_deref(args->r6, &target_buffer));
+  iree_device_size_t target_offset = iree_hal_cast_device_size(args->i7);
+  iree_device_size_t length = iree_hal_cast_device_size(args->i8);
+  iree_hal_copy_flags_t flags = (iree_hal_copy_flags_t)args->i9;
+  iree_const_byte_span_t source_span = iree_const_byte_span_empty();
+  IREE_RETURN_IF_ERROR(iree_vm_buffer_map_ro(source_buffer, source_offset,
+                                             length, 1, &source_span));
+  return iree_hal_device_queue_update(
+      device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
+      iree_hal_fence_semaphore_list(signal_fence), source_span.data, 0,
+      target_buffer, target_offset, length, flags);
+}
+
+IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_copy,  //
+                   iree_hal_module_state_t,            //
+                   rIrrrIrIII, v) {
+  iree_hal_device_t* device = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_device_check_deref(args->r0, &device));
+  iree_hal_queue_affinity_t queue_affinity =
+      (iree_hal_queue_affinity_t)args->i1;
+  iree_hal_fence_t* wait_fence = iree_hal_fence_deref(args->r2);
+  iree_hal_fence_t* signal_fence = iree_hal_fence_deref(args->r3);
+  iree_hal_buffer_t* source_buffer = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_check_deref(args->r4, &source_buffer));
+  iree_device_size_t source_offset = iree_hal_cast_device_size(args->i5);
+  iree_hal_buffer_t* target_buffer = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_check_deref(args->r6, &target_buffer));
+  iree_device_size_t target_offset = iree_hal_cast_device_size(args->i7);
+  iree_device_size_t length = iree_hal_cast_device_size(args->i8);
+  iree_hal_copy_flags_t flags = (iree_hal_copy_flags_t)args->i9;
+  return iree_hal_device_queue_copy(
+      device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
+      iree_hal_fence_semaphore_list(signal_fence), source_buffer, source_offset,
+      target_buffer, target_offset, length, flags);
+}
+
 IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_read,  //
                    iree_hal_module_state_t,            //
                    rIrrrIrIIi, v) {
@@ -1215,7 +1283,7 @@ IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_read,  //
   IREE_RETURN_IF_ERROR(iree_hal_buffer_check_deref(args->r6, &target_buffer));
   iree_device_size_t target_offset = iree_hal_cast_device_size(args->i7);
   iree_device_size_t length = iree_hal_cast_device_size(args->i8);
-  uint32_t flags = (uint32_t)args->i9;
+  iree_hal_read_flags_t flags = (iree_hal_read_flags_t)args->i9;
   return iree_hal_device_queue_read(
       device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
       iree_hal_fence_semaphore_list(signal_fence), source_file, source_offset,
@@ -1238,7 +1306,7 @@ IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_write,  //
   IREE_RETURN_IF_ERROR(iree_hal_file_check_deref(args->r6, &target_file));
   uint64_t target_offset = (uint64_t)args->i7;
   iree_device_size_t length = iree_hal_cast_device_size(args->i8);
-  uint32_t flags = (uint32_t)args->i9;
+  iree_hal_write_flags_t flags = (iree_hal_write_flags_t)args->i9;
   return iree_hal_device_queue_write(
       device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
       iree_hal_fence_semaphore_list(signal_fence), source_buffer, source_offset,
@@ -1258,10 +1326,15 @@ IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_execute,  //
   iree_hal_command_buffer_t** command_buffers = NULL;
   IREE_VM_ABI_VLA_STACK_DEREF(args, a4_count, a4, iree_hal_command_buffer, 32,
                               &command_buffer_count, &command_buffers);
+  if (command_buffer_count > 1) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "only zero or one command buffer is allowed");
+  }
   return iree_hal_device_queue_execute(
       device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
-      iree_hal_fence_semaphore_list(signal_fence), command_buffer_count,
-      command_buffers, /*binding_tables=*/NULL);
+      iree_hal_fence_semaphore_list(signal_fence),
+      command_buffer_count > 0 ? command_buffers[0] : NULL,
+      iree_hal_buffer_binding_table_empty());
 }
 
 IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_execute_indirect,  //
@@ -1313,8 +1386,8 @@ IREE_VM_ABI_EXPORT(iree_hal_module_device_queue_execute_indirect,  //
     };
     status = iree_hal_device_queue_execute(
         device, queue_affinity, iree_hal_fence_semaphore_list(wait_fence),
-        iree_hal_fence_semaphore_list(signal_fence), 1, &command_buffer,
-        &binding_table);
+        iree_hal_fence_semaphore_list(signal_fence), command_buffer,
+        binding_table);
   }
 
   // If we had to heap-allocate the binding table storage it must be freed
