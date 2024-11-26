@@ -7,9 +7,14 @@
 #include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/PatternMatch.h"
+
+static llvm::cl::opt<bool> clEnableMemAwarePartitioning(
+    "iree-stream-mem-aware-partitioning",
+    llvm::cl::desc("Enable Memory Aware Partitioning."), llvm::cl::init(false));
 
 #define DEBUG_TYPE "iree-stream-partitioning"
 
@@ -170,7 +175,9 @@ PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
                                     Block *block) {
   // Only one algorithm today.
   PartitionSet partitions = partitionStreamableOpsReference(config, block);
-  PartitionSet memAwarePartitions = memoryAwarePartition(partitions);
+  if (clEnableMemAwarePartitioning) {
+    return memoryAwarePartition(partitions, block);
+  }
   return partitions;
 }
 

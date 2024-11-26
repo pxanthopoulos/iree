@@ -16,115 +16,171 @@
 
 #include <cstring>
 #include <fstream>
-#include <string>
+// #include <string>
 
 #define DEBUG_TYPE "iree-stream-mem-partitioning"
 
-static llvm::cl::opt<bool> clEnableMemAwarePartitioning(
-    "iree-stream-mem-aware-partitioning",
-    llvm::cl::desc("Enable Memory Aware Partitioning."), llvm::cl::init(false));
-
 static llvm::cl::opt<std::string> clEnableMemAwarePartitioningIOFile(
     "iree-stream-mem-aware-partitioning-io-file",
-    llvm::cl::desc("Input/Output File Name For Memory Aware Partitioning."),
+    llvm::cl::desc("Input/Output File Name For Memory Aware Partitioning. Will "
+                   "create files like: {name}-{partition number}.dot"),
     llvm::cl::init("comp-graph.dot"));
 
 namespace mlir::iree_compiler::IREE::Stream {
 
-PartitionSet memoryAwarePartition(PartitionSet initialPartitions) {
-  if (!clEnableMemAwarePartitioning) {
-    return initialPartitions;
-  }
-  for (auto &partition : initialPartitions.partitions) {
-    bool noDispatches = true;
-    bool onlyCuda = true;
-    for (const auto &op : partition.ops) {
-      if (isa<IREE::Stream::AsyncDispatchOp>(op)) {
-        noDispatches = false;
+static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
+  LLVM_DEBUG({
+    auto *rootOp = block->getParentOp();
+    while (auto parentOp = rootOp->getParentOp()) {
+      if (!isa<IREE::Stream::TimelineOpInterface>(parentOp) &&
+          parentOp->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+        rootOp = parentOp;
+        break;
       }
-      auto deviceAffinityAttr =
-          llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
-              op->getAttr("affinity"));
-      if (deviceAffinityAttr) {
-        auto deviceSymbolAttr =
-            deviceAffinityAttr.getDevice().getRootReference();
-        auto moduleOp = op->getParentOp();
-        while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
-          moduleOp = moduleOp->getParentOp();
+      rootOp = parentOp;
+    }
+    return std::make_unique<AsmState>(rootOp);
+  });
+  return nullptr;
+}
+
+bool checkSomeDispatches(Partition partition) {
+  for (const auto &op : partition.ops) {
+    auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
+    if (dispatchOp)
+      return true;
+  }
+  return false;
+}
+
+PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
+                                  Block *block) {
+  auto asmState = getRootAsmState(block);
+  for (const auto &[partitionIndex, partition] :
+       llvm::enumerate(initialPartitions.partitions)) {
+    if (!checkSomeDispatches(partition)) {
+      continue;
+    }
+
+    // TODO: create graph from set of operations
+
+    std::ofstream outFile("partition-graph-" + std::to_string(partitionIndex) +
+                              ".dot",
+                          std::ios::trunc);
+    if (!outFile) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Failed to open file: partition-graph-" << partitionIndex
+                 << ".dot\nReturning "
+                    "initial partitions.\n");
+      return initialPartitions;
+    }
+    outFile << "digraph cfg {\n";
+
+    llvm::DenseMap<unsigned, Operation *> opMap;
+    llvm::DenseMap<Operation *, unsigned> inverseOpMap;
+    int64_t totalWeight = 0;
+    for (const auto [opIndex, op] :
+         llvm::enumerate(llvm::reverse(partition.ops))) {
+      opMap[opIndex] = op;
+      inverseOpMap[op] = opIndex;
+      int64_t opWeight = 0;
+
+      auto tiedOp = dyn_cast<IREE::Util::TiedOpInterface>(*op);
+      auto sizeAwareOp = dyn_cast_or_null<IREE::Util::SizeAwareOpInterface>(op);
+
+      for (const auto &[resultIndex, result] :
+           llvm::enumerate(op->getResults())) {
+        if (!llvm::isa<IREE::Stream::ResourceType>(result.getType())) {
+          continue;
         }
-        SymbolTable symbolTable(moduleOp);
-        auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
-        auto initialValue = rootAttrDef->getAttr("initial_value");
-        std::string buffer;
-        llvm::raw_string_ostream os(buffer);
-        initialValue.print(os);
-        std::string result = os.str();
-        std::string device;
-        if (result.find("cuda") == std::string::npos) {
-          onlyCuda = false;
-          LLVM_DEBUG({
-            initialValue.dump();
-            op->dump();
-            llvm::dbgs() << "\n\n";
-          });
-          break;
+        if (tiedOp) {
+          auto tiedOperand = tiedOp.getTiedResultOperand(result);
+          if (tiedOperand) {
+            continue;
+          }
+        }
+
+        // dummy default value, partitioning only works for static sizes
+        int64_t actualSize = 50;
+        if (sizeAwareOp) {
+          auto resultSize = sizeAwareOp.getResultSizeFromValue(result);
+          auto valueTypedAttr =
+              resultSize.getDefiningOp()->getAttrOfType<TypedAttr>("value");
+
+          if (resultSize.getType().isIntOrIndex() && valueTypedAttr) {
+            auto integerAttr =
+                llvm::dyn_cast<mlir::IntegerAttr>(valueTypedAttr);
+            if (integerAttr) {
+              actualSize = integerAttr.getInt();
+            }
+          }
+        }
+
+        opWeight += actualSize;
+      }
+      outFile << opIndex << "[weight=" << opWeight << "];\n";
+      totalWeight += opWeight;
+    }
+
+    for (const auto op : llvm::reverse(partition.ops)) {
+      for (const Value &value : op->getOperands()) {
+        Operation *definingOp = value.getDefiningOp();
+
+        if (partition.ops.contains(definingOp)) {
+          int64_t actualSize = 50;
+
+          auto sizeAwareOp =
+              dyn_cast_or_null<IREE::Util::SizeAwareOpInterface>(definingOp);
+          if (sizeAwareOp) {
+            auto resultSize = sizeAwareOp.getResultSizeFromValue(value);
+            auto valueTypedAttr =
+                resultSize.getDefiningOp()->getAttrOfType<TypedAttr>("value");
+
+            if (resultSize.getType().isIntOrIndex() && valueTypedAttr) {
+              actualSize =
+                  llvm::dyn_cast<mlir::IntegerAttr>(valueTypedAttr).getInt();
+            }
+          }
+          unsigned parentOpIndex = inverseOpMap[definingOp];
+          unsigned opIndex = inverseOpMap[op];
+          outFile << parentOpIndex << "->" << opIndex
+                  << "[weight=" << actualSize << "];\n";
         }
       }
     }
-    if (!noDispatches && onlyCuda) {
-      LLVM_DEBUG({
-        llvm::dbgs() << "Partition with dispatches\n\n";
-        if (partition.affinity) {
-          llvm::dbgs() << "AFFINITY:\n";
-          partition.affinity.dump();
-          llvm::dbgs() << "\n\n";
-        }
-        llvm::dbgs() << "INS:\n\n";
-        for (auto &in : partition.ins) {
-          in.dump();
-        }
-        llvm::dbgs() << "\n\nOUTS:\n\n";
-        for (auto &out : partition.outs) {
-          out.dump();
-        }
-        llvm::dbgs() << "\n\nOPS:\n\n";
-        for (auto *op : llvm::reverse(partition.ops)) {
-          op->dump();
-        }
-        llvm::dbgs() << "\n\n";
-      });
 
-      // TODO: create graph from set of operations
-      // std::ofstream outFile("partition-graph.dot");
-      // if (!outFile) {
-      //   LLVM_DEBUG(llvm::dbgs()
-      //              << "Failed to open file: partition-graph.dot\nReturning "
-      //                 "initial partitions.\n");
-      //   return initialPartitions;
-      // }
+    outFile << "}\n";
+    outFile.close();
 
-      // outFile << "digraph cfg {";
-      // outFile.close();
-
-      // TODO: setup dagP
+    // TODO: setup dagP
+    if (1) {
       MLGP_option opt;
       dgraph G;
 
+      totalWeight = 72;
+      int64_t memoryLimit = 11;
       dagP_init_parameters(&opt,
-                           std::min((unsigned long)3, partition.ops.size()));
+                           static_cast<unsigned long>(
+                               (totalWeight + memoryLimit - 1) / memoryLimit));
 
       char *filename = new char[clEnableMemAwarePartitioningIOFile.size() + 1];
       std::strcpy(filename, clEnableMemAwarePartitioningIOFile.c_str());
       dagP_init_filename(&opt, filename);
 
-      /* part_ub and part_lb (upper/lower bounds for partition sizes) are left
-       * to default -> tot_weight/nbpart) {*,/} 1.03 */
+      /* part_ub and part_lb (upper/lower bounds for partition sizes) are
+       * left to default -> tot_weight/nbpart) {*,/} 1.03
+       *
+       */
+      //      for (int i = 0; i < opt.nbPart; ++i) {
+      //        opt.ub[i] = 10;
+      //        opt.lb[i] = 1;
+      //      }
       opt.seed = 0;             // initialized with time
-      opt.ratio = 1.03;         // max imbalance ratio
-      opt.debug = 5;            // debug verbosity
+      opt.ratio = 1;            // max imbalance ratio
+      opt.debug = 0;            // debug verbosity
       opt.toggle = 0;           // toggle plot generation
-      opt.print = 3;            // verbosity
-      opt.runs = 1;             // # of runs
+      opt.print = 0;            // verbosity
+      opt.runs = 5;             // # of runs
       opt.use_binary_input = 0; // work with binary input
       opt.write_parts = 0;      // do not output partitions in file
 
@@ -137,13 +193,16 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions) {
       opt.nbProc = 1;          // # of processors
 
       LLVM_DEBUG({
+        llvm::dbgs() << "{\nBEFORE\n";
         const char c = '\n';
         printOptions(&opt, c);
+        fflush(stdout);
+        llvm::dbgs() << "}\n\n\n";
       });
 
-      // TODO: do partitioning (ratio is size available mem over min transient
-      // size -> worst case the min transient causes overflow and is placed
-      // alone)
+      // TODO: do partitioning (ratio is size available mem over min
+      // transient size -> worst case the min transient causes overflow and
+      // is placed alone)
 
       dagP_read_graph(filename, &G, &opt);
 
@@ -162,11 +221,23 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions) {
       ecType x = dagP_partition_from_dgraph(&G, &opt, parts);
 
       LLVM_DEBUG({
-        printf("edge cut: %d\n", (int)x);
+        printf("{\nedge cut: %d\n", (int)x);
         // node id's are 1-indexed
         for (idxType i = 1; i <= G.nVrtx; ++i) {
           printf("part[node:%d] = %d\n", i, parts[i]);
         }
+        printf("}\n\n\n");
+        fflush(stdout);
+      });
+
+      LLVM_DEBUG({
+        llvm::dbgs() << "{\nAFTER\n";
+        for (int i = 0; i < opt.nbPart; i++) {
+          printf("For partition %d, LB: %lf, UB: %lf\n", i, opt.lb[i],
+                 opt.ub[i]);
+          fflush(stdout);
+        }
+        llvm::dbgs() << "}\n\n\n";
       });
 
       // TODO: create new partition set and return it
