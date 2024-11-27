@@ -184,6 +184,11 @@ void buildStreamAsyncPassPipeline(OpPassManager &passManager,
   // the stream.cmd.* layer.
   passManager.addPass(IREE::Stream::createVerifyAsyncAccessRangesPass());
 
+  FunctionLikeNest(passManager)
+      .addPass(IREE::Stream::createAddInitialAttributePass);
+
+  passManager.addPass(IREE::Stream::createAttributeFeedbackLoopPass());
+
   //----------------------------------------------------------------------------
   // Stream formation and scheduling
   //----------------------------------------------------------------------------

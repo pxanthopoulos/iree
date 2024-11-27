@@ -100,3 +100,4 @@ artifacts/
 
 iree-build/
 workspace/
+.idea/

@@ -537,4 +537,109 @@ def VerifyLoweringToCmdPass :
   let summary = "Verifies that all stream.async.* ops and types are fully lowered to stream.cmd.* ops.";
 }
 
+//===----------------------------------------------------------------------===//
+// New Passes
+//===----------------------------------------------------------------------===//
+
+def AddInitialAttributePass :
+    InterfacePass<"iree-stream-add-initial-attribute", "mlir::CallableOpInterface"> {
+  let summary = "Adds a simple initial attribute to a function-like op.";
+  let description = [{
+    This pass adds a simple initial attribute to a function-like op.
+
+    Example:
+    ```mlir
+    // Before:
+    func.func { ... }
+
+    // After:
+    func.func attributes {arith.number = 42 : i32, ...} { ... }
+    ```
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+  ];
+}
+
+def IncrementAttributePass :
+    InterfacePass<"iree-stream-increment-attribute", "mlir::CallableOpInterface"> {
+  let summary = "Increments the value of arith.number by a specified value.";
+  let description = [{
+    This pass finds the arith.number attribute of the function-like op and adds a specified value to its value.
+
+    Example:
+    ```mlir
+    // Before:
+    func.func attributes {arith.number = 42 : i32, ...} { ... }
+
+    // After (if increment by 3):
+    func.func attributes {arith.number = 45 : i32, ...} { ... }
+    ```
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+  ];
+  let options = [
+      Option<"incrementAmount", "increment-by", "int32_t", /*default=*/"1",
+             "Amount to increment the attribute by">
+    ];
+}
+
+def ModuloAttributePass :
+    InterfacePass<"iree-stream-modulo-attribute", "mlir::CallableOpInterface"> {
+  let summary = "Takes the remainder of the value of arith.number when divided by 7.";
+  let description = [{
+    This pass finds the arith.my_number attribute of the function-like op and mods it by 7.
+
+    Example:
+    ```mlir
+    // Before:
+    func.func attributes {arith.number = 43 : i32, ...} { ... }
+
+    // After:
+    func.func attributes {arith.number = 1 : i32, ...} { ... }
+    ```
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+  ];
+}
+
+def AddFiveAttributePass :
+    Pass<"iree-stream-add-five-attribute", "mlir::ModuleOp"> {
+  let summary = "Adds 5 to the value of arith.number.";
+  let description = [{
+    This pass finds the arith.my_number attribute of all function-like op and adds 5 to it.
+
+    Example:
+    ```mlir
+    // Before:
+    func.func attributes {arith.number = 43 : i32, ...} { ... }
+
+    // After:
+    func.func attributes {arith.number = 48 : i32, ...} { ... }
+    ```
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+  ];
+}
+
+def AttributeFeedbackLoopPass :
+    Pass<"iree-stream-attribute-feedback-loop", "mlir::ModuleOp"> {
+  let summary = "Runs passes in a feedback loop until mod 7 equals 0 or max increment reached.";
+  let description = [{
+    This pass implements a feedback loop that:
+    1. Runs increment for each callable op (starting with +1)
+    2. Runs modulo for each callable op
+    3. Runs +5 for each callable op
+    4. If result is 5 for every callable op, continues to next passes
+    5. If not, increases increment by 1 and tries again
+    6. Gives up after increment of 4
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+  ];
+}
+
 #endif  // IREE_DIALECT_STREAM_PASSES
