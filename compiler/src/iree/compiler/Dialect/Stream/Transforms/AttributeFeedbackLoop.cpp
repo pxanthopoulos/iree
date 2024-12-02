@@ -1,4 +1,5 @@
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h"
+#include "iree/compiler/Utils/PassUtils.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -9,6 +10,9 @@
 #define DEBUG_TYPE "iree-stream-feedback-loop"
 
 namespace mlir::iree_compiler::IREE::Stream {
+
+using FunctionLikeNest =
+    MultiOpNest<func::FuncOp, IREE::Util::InitializerOp, IREE::Util::FuncOp>;
 
 #define GEN_PASS_DEF_ATTRIBUTEFEEDBACKLOOPPASS
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h.inc"
@@ -45,26 +49,45 @@ struct AttributeFeedbackLoopPass
                "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n\n\n";
       });
 
+      //      FunctionLikeNest(passManager1)
+      //          .addPass(std::move(IREE::Stream::createIncrementAttributePass(
+      //              incrementAttributeOptions)))
+      //          .addPass(std::move(IREE::Stream::createModuloAttributePass()));
+
       IncrementAttributePassOptions incrementAttributeOptions;
       incrementAttributeOptions.incrementAmount = currentIncrement;
 
-      for (auto callableOp : moduleOp.getOps<mlir::CallableOpInterface>()) {
-        if (llvm::isa<mlir::func::FuncOp, IREE::Util::InitializerOp,
-                      IREE::Util::FuncOp>(callableOp)) {
-          OpPassManager passManager(callableOp->getName());
+      OpPassManager passManager;
 
-          passManager.addPass(IREE::Stream::createIncrementAttributePass(
-              incrementAttributeOptions));
-          passManager.addPass(IREE::Stream::createModuloAttributePass());
+      FunctionLikeNest(passManager)
+          .addPass([&]() {
+            return IREE::Stream::createIncrementAttributePass(
+                incrementAttributeOptions);
+          })
+          .addPass([]() { return IREE::Stream::createModuloAttributePass(); });
 
-          // Run the pipeline
-          if (failed(runPipeline(passManager, callableOp))) {
-            return signalPassFailure();
-          }
-        }
-      }
+      //      if (failed(runPipeline(passManager, moduleOp))) {
+      //        return signalPassFailure();
+      //      }
 
-      OpPassManager passManager(moduleOp->getName());
+      //      for (auto callableOp :
+      //      moduleOp.getOps<mlir::CallableOpInterface>()) {
+      //        if (llvm::isa<mlir::func::FuncOp, IREE::Util::InitializerOp,
+      //                      IREE::Util::FuncOp>(callableOp)) {
+      //          OpPassManager passManager(callableOp->getName());
+      //
+      //          passManager.addPass(IREE::Stream::createIncrementAttributePass(
+      //              incrementAttributeOptions));
+      //          passManager.addPass(IREE::Stream::createModuloAttributePass());
+      //
+      //          // Run the pipeline
+      //          if (failed(runPipeline(passManager, callableOp))) {
+      //            return signalPassFailure();
+      //          }
+      //        }
+      //      }
+
+      //      OpPassManager passManager(moduleOp->getName());
       passManager.addPass(IREE::Stream::createAddFiveAttributePass());
       if (failed(runPipeline(passManager, moduleOp))) {
         return signalPassFailure();

@@ -23,7 +23,7 @@ struct AddInitialAttributePass
     OpBuilder builder(rootOp.getContext());
 
     // Create a constant value
-    auto value = builder.getI32IntegerAttr(36);
+    auto value = builder.getI32IntegerAttr(38);
 
     // Add it as a top-level named attribute with arith prefix
     rootOp->setAttr("arith.number", value);
