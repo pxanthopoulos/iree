@@ -8,6 +8,7 @@
 #define IREE_COMPILER_CODEGEN_UTILS_GPUUTILS_H_
 
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
@@ -174,16 +175,6 @@ combiningKindToAllReduce(vector::CombiningKind kind);
 bool sharedMemTransposeFilter(AffineMap indexMap);
 
 //===----------------------------------------------------------------------===//
-// GPU UKernel Utils
-//===----------------------------------------------------------------------===//
-
-/// Checks if target Chip(StringRef) has UKernel support.
-bool hasUkernelSupportedRocmArch(StringRef targetChip);
-
-/// Checks if targetAttr's GPU target has UKernel support.
-bool hasUkernelSupportedGpuArch(IREE::HAL::ExecutableTargetAttr targetAttr);
-
-//===----------------------------------------------------------------------===//
 // GPU Target Information
 //===----------------------------------------------------------------------===//
 FailureOr<ArrayAttr> getSupportedMmaTypes(DictionaryAttr config);
@@ -205,6 +196,17 @@ IREE::GPU::TargetAttr getGPUTargetAttr(Operation *op);
 /// exists; otherwise returns the subgroup size from the GPU target description.
 /// Returns std::nullopt if none found.
 std::optional<int> getGPUSubgroupSize(mlir::FunctionOpInterface func);
+
+/// Returns all `IREE::HAL::ExecutableVariantOp` operations from the
+/// given `mlir::ModuleOp`, ensuring they are returned in their original IR
+/// order.
+SmallVector<IREE::HAL::ExecutableVariantOp>
+getExecutableVariantOps(mlir::ModuleOp moduleOp);
+
+// Returns the MMA intrinsics associated with the given
+// `IREE::HAL::ExecutableVariantOp`.
+SmallVector<IREE::GPU::MMAIntrinsic>
+queryMMAIntrinsics(IREE::HAL::ExecutableVariantOp executableOp);
 
 } // namespace mlir::iree_compiler
 

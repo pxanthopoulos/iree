@@ -10,7 +10,7 @@ import os
 from conftest import VmfbManager
 from pathlib import Path
 
-rocm_chip = os.getenv("ROCM_CHIP", default="gfx90a")
+rocm_chip = os.getenv("ROCM_CHIP", default="gfx942")
 vmfb_dir = os.getenv("TEST_OUTPUT_ARTIFACTS", default=Path.cwd())
 
 ###############################################################################
@@ -33,7 +33,7 @@ sdxl_vae_real_weights = fetch_source_fixture(
 )
 
 sdxl_vae_mlir = fetch_source_fixture(
-    "https://sharkpublic.blob.core.windows.net/sharkpublic/sai/sdxl-vae-decode/model.mlirbc",
+    "https://sharkpublic.blob.core.windows.net/sharkpublic/sai/sdxl-vae-decode/model.mlir",
     group="sdxl_vae",
 )
 
@@ -43,6 +43,7 @@ CPU_COMPILE_FLAGS = [
     "--iree-llvmcpu-fail-on-out-of-bounds-stack-allocation=false",
     "--iree-llvmcpu-distribution-size=32",
     "--iree-opt-const-eval=false",
+    "--iree-opt-strip-assertions=true",
     "--iree-llvmcpu-enable-ukernels=all",
     "--iree-global-opt-enable-quantized-matmul-reassociation",
 ]
@@ -63,6 +64,7 @@ ROCM_COMPILE_FLAGS = [
     "--iree-hal-target-backends=rocm",
     f"--iree-hip-target={rocm_chip}",
     "--iree-opt-const-eval=false",
+    "--iree-opt-strip-assertions=true",
     "--iree-global-opt-propagate-transposes=true",
     "--iree-opt-outer-dim-concat=true",
     "--iree-llvmgpu-enable-prefetch=true",

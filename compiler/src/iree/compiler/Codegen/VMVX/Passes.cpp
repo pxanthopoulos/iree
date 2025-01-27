@@ -39,7 +39,7 @@ static void addTileAndDistributePasses(OpPassManager &funcPassManager) {
   funcPassManager.addPass(createCSEPass());
   funcPassManager.addPass(createConvertToDestinationPassingStylePass());
   funcPassManager.addPass(createFoldAffineMinInDistributedLoopsPass());
-  funcPassManager.addPass(createCanonicalizerPass());
+  funcPassManager.addPass(createConfigTrackingCanonicalizerPass());
   funcPassManager.addPass(createCSEPass());
   funcPassManager.addPass(createFuseTensorPadWithConsumerPass());
   funcPassManager.addPass(createConcretizePadResultShapePass());
@@ -71,6 +71,7 @@ void addVMVXDefaultPassPipeline(OpPassManager &funcPassManager,
   addCPUBufferizePasses(funcPassManager);
 
   // Cleanup the IR that may now have unused loops.
+  funcPassManager.addPass(createPropagateDispatchSizeBoundsPass());
   funcPassManager.addPass(createRemoveSingleIterationLoopPass());
 
   // Convert buffer-level microkernels.

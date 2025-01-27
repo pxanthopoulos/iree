@@ -937,42 +937,6 @@ bool sharedMemTransposeFilter(AffineMap indexMap) {
 }
 
 //===----------------------------------------------------------------------===//
-// GPU UKernel Utils
-//===----------------------------------------------------------------------===//
-
-// TODO: Add more popular kernels into this list and the ukernel cmake.
-//       No real technical reason to only allow these aside from compile
-//       time and diskspace.
-bool hasUkernelSupportedRocmArch(StringRef targetChip) {
-  const char *kSupportedTargetChip[] = {"gfx90a", "gfx940", "gfx1030",
-                                        "gfx1100"};
-  size_t arraySize =
-      sizeof(kSupportedTargetChip) / sizeof(kSupportedTargetChip[0]);
-  for (int i = 0; i < arraySize; i++) {
-    // return true if targetChip is found inside kSupportedTargetChip.
-    if (targetChip.compare(kSupportedTargetChip[i]) == 0)
-      return true;
-  }
-  return false;
-}
-
-bool hasUkernelSupportedRocmArch(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  auto targetArch = getGPUTargetAttr(targetAttr).getArch();
-  if (targetArch.empty())
-    return false;
-  return hasUkernelSupportedRocmArch(targetArch);
-}
-
-/// Checks if target GPU has UKernel support.
-bool hasUkernelSupportedGpuArch(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  if (isROCMBackend(targetAttr) && hasUkernelSupportedRocmArch(targetAttr)) {
-    return true;
-  }
-  // TODO: Once plumbed, add a CUDA backend and supported cuda arch check.
-  return false;
-}
-
-//===----------------------------------------------------------------------===//
 // GPU Target Information
 //===----------------------------------------------------------------------===//
 
@@ -1026,6 +990,26 @@ std::optional<int> getGPUSubgroupSize(mlir::FunctionOpInterface func) {
   if (IREE::GPU::TargetAttr target = getGPUTargetAttr(func))
     return target.getPreferredSubgroupSize();
   return std::nullopt;
+}
+
+SmallVector<IREE::HAL::ExecutableVariantOp>
+getExecutableVariantOps(mlir::ModuleOp moduleOp) {
+  SmallVector<IREE::HAL::ExecutableVariantOp> executableVariantOps;
+  moduleOp.walk([&](IREE::HAL::ExecutableVariantOp executableOp) {
+    executableVariantOps.push_back(executableOp);
+  });
+  return executableVariantOps;
+}
+
+SmallVector<IREE::GPU::MMAIntrinsic>
+queryMMAIntrinsics(IREE::HAL::ExecutableVariantOp executableOp) {
+  SmallVector<IREE::GPU::MMAIntrinsic> mmaIntrinsics;
+  if (IREE::GPU::TargetAttr target = getGPUTargetAttr(executableOp)) {
+    mmaIntrinsics = llvm::map_to_vector(
+        target.getWgp().getMma(),
+        [](IREE::GPU::MMAAttr attr) { return attr.getIntrinsic().getValue(); });
+  }
+  return mmaIntrinsics;
 }
 
 } // namespace mlir::iree_compiler

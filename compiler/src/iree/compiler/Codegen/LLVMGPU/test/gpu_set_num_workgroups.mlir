@@ -28,7 +28,7 @@ func.func @add_dispatch_0() {
   return
 }
 
-//      CHECK: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32>
+//      CHECK: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32>
 //      CHECK: func.func @add_dispatch_0
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK:   linalg.generic
@@ -54,14 +54,12 @@ func.func @dot_dispatch_1() {
   return
 }
 
-//  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[4, 2, 4]{{\]}}>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulSimt workgroup_size = [2, 4, 1] subgroup_size = 32, {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
+//      CHECK: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [2, 4, 1] subgroup_size = 32, {gpu_pipeline_options = #iree_gpu.pipeline_options<prefetch_shared_memory = false, no_reduce_shared_memory_bank_conflicts = true, use_igemm_convolution = false>}>
 //      CHECK: func.func @dot_dispatch_1
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK:   linalg.fill
-// CHECK-SAME:       lowering_config = #[[CONFIG]]
 //      CHECK:   linalg.matmul
-// CHECK-SAME:       lowering_config = #[[CONFIG]]
+// CHECK-SAME:       lowering_config = #iree_gpu.lowering_config<{reduction = [0, 0, 4], thread = [2, 1, 0], workgroup = [4, 2, 1]}>
 
 // -----
 
@@ -83,14 +81,12 @@ func.func @unaligned_k() {
   return
 }
 
-//  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[32, 128, 2]{{\]}}>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulSimt workgroup_size = [32, 8, 1] subgroup_size = 32, {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
+//      CHECK: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 8, 1] subgroup_size = 32, {gpu_pipeline_options = #iree_gpu.pipeline_options<prefetch_shared_memory = false, no_reduce_shared_memory_bank_conflicts = true, use_igemm_convolution = false>}>
 //      CHECK: func.func @unaligned_k
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK:   linalg.fill
-// CHECK-SAME:       lowering_config = #[[CONFIG]]
 //      CHECK:   linalg.matmul
-// CHECK-SAME:       lowering_config = #[[CONFIG]]
+// CHECK-SAME:       lowering_config = #iree_gpu.lowering_config<{reduction = [0, 0, 2], thread = [1, 16, 0], workgroup = [32, 128, 1]}>
 
 // -----
 
@@ -119,11 +115,10 @@ func.func @predict_dispatch_153() {
 }
 
 //  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[]{{\]}}>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUDistribute workgroup_size = [1, 1, 1]>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUDistribute workgroup_size = [1, 1, 1]>
 //      CHECK: func.func @predict_dispatch_153()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK: linalg.fill
-// CHECK-SAME:   lowering_config = #[[CONFIG]]
 //      CHECK: linalg.generic
 // CHECK-SAME:   lowering_config = #[[CONFIG]]
 
@@ -152,7 +147,7 @@ func.func @reduction_aligned2() {
   return
 }
 
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32>
 //      CHECK: func.func @reduction_aligned2()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK: linalg.fill
@@ -183,7 +178,7 @@ func.func @copy_as_generic() {
 }
 
 //  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 64]{{\]}}>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUDistribute workgroup_size = [64, 1, 1] subgroup_size = 32>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUDistribute workgroup_size = [64, 1, 1] subgroup_size = 32>
 //      CHECK: func.func @copy_as_generic()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK: linalg.generic
@@ -211,7 +206,7 @@ func.func @static_1d_fft_stage2() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[4]{{\]}}>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUDistribute workgroup_size = [32, 1, 1]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUDistribute workgroup_size = [32, 1, 1]>
 //       CHECK: func.func @static_1d_fft_stage2()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK: iree_linalg_ext.fft
@@ -231,8 +226,8 @@ func.func @static_3d_fft_stage3() {
   %c32 = arith.constant 32 : index
   %cst = arith.constant dense<[1.000000e+00, 0.707106769, 6.12323426E-17, -0.707106769]> : tensor<4xf32>
   %cst_0 = arith.constant dense<[-0.000000e+00, -0.707106769, -1.000000e+00, -0.707106769]> : tensor<4xf32>
-  %0 = bufferization.to_memref %cst_0 : memref<4xf32>
-  %1 = bufferization.to_memref %cst : memref<4xf32>
+  %0 = bufferization.to_memref %cst_0 : tensor<4xf32> to memref<4xf32>
+  %1 = bufferization.to_memref %cst : tensor<4xf32> to memref<4xf32>
   %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) : memref<64x128x32xf32>
   %3 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) : memref<64x128x32xf32>
   iree_linalg_ext.fft {__internal_linalg_transform__ = "workgroup"} ins(%c3, %1, %0 : index, memref<4xf32>, memref<4xf32>) outs(%2, %3 : memref<64x128x32xf32>, memref<64x128x32xf32>)
@@ -240,7 +235,7 @@ func.func @static_3d_fft_stage3() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 1, 8]{{\]}}>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUDistribute workgroup_size = [32, 1, 1]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUDistribute workgroup_size = [32, 1, 1]>
 //       CHECK: func.func @static_3d_fft_stage3()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK: iree_linalg_ext.fft
@@ -254,7 +249,7 @@ func.func @static_3d_fft_stage3() {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_codegen.lowering_config<tile_sizes = [[32, 128, 64]]>
-#translation = #iree_codegen.translation_info<LLVMGPUMatmulSimt workgroup_size = [16, 8, 1], {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
+#translation = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [16, 8, 1], {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
 #compilation = #iree_codegen.compilation_info<lowering_config = #config, translation_info = #translation>
 func.func @_lowering_config_test_dispatch_1() {
   %cst = arith.constant 0.000000e+00 : f32
@@ -274,11 +269,10 @@ func.func @_lowering_config_test_dispatch_1() {
 }
 
 //  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[32, 128, 64]{{\]}}
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulSimt workgroup_size = [16, 8, 1], {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [16, 8, 1], {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
 //      CHECK: func.func @_lowering_config_test_dispatch_1()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK: linalg.fill
-// CHECK-SAME:     lowering_config = #[[CONFIG]]
 //      CHECK: linalg.matmul
 // CHECK-SAME:     lowering_config = #[[CONFIG]]
 
@@ -311,7 +305,7 @@ func.func @sort_op() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[64]{{\]}}>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUDistribute workgroup_size = [64, 1, 1]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUDistribute workgroup_size = [64, 1, 1]>
 //       CHECK: func.func @sort_op()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK: iree_linalg_ext.sort
@@ -341,7 +335,7 @@ func.func @matmul_config_sm35() {
   return
 }
 
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulSimt workgroup_size = [32, 8, 1] subgroup_size = 32, {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 8, 1] subgroup_size = 32, {gpu_pipeline_options = #iree_gpu.pipeline_options<prefetch_shared_memory = false, no_reduce_shared_memory_bank_conflicts = true, use_igemm_convolution = false>}>
 //      CHECK: func.func @matmul_config_sm35()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 
@@ -369,7 +363,7 @@ func.func @matmul_config_sm80() {
   return
 }
 
-//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [64, 2, 1] subgroup_size = 32
+//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [64, 2, 1] subgroup_size = 32
 //      SM80: func.func @matmul_config_sm80()
 // SM80-SAME:     translation_info = #[[TRANSLATION]]
 
@@ -397,7 +391,7 @@ func.func @matmul_config_sm86() {
   return
 }
 
-//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [64, 2, 1] subgroup_size = 32
+//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [64, 2, 1] subgroup_size = 32
 //      SM80: func.func @matmul_config_sm86()
 // SM80-SAME:     translation_info = #[[TRANSLATION]]
 
@@ -436,7 +430,7 @@ func.func @contract_reduction() {
   return
 }
 
-//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32
+//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32
 //      SM80: func.func @contract_reduction()
 // SM80-SAME:     translation_info = #[[TRANSLATION]]
 
@@ -467,7 +461,7 @@ func.func @dynamic_pack_2x2() {
 }
 
 //  SM80-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[16, 16]]>
-//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUPackUnPack workgroup_size = [32, 1, 1]>
+//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUPackUnPack workgroup_size = [32, 1, 1]>
 //      SM80:   func.func @dynamic_pack_2x2()
 // SM80-SAME:     translation_info = #[[TRANSLATION]]
 //      SM80:     tensor.pack
@@ -497,11 +491,10 @@ func.func @large_matmul_f16() {
   return
 }
 //  SM80-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[128, 256, 32]{{\]}}
-//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [128, 2, 1] subgroup_size = 32, {pipeline_depth = 3 : i64, store_stage = 1 : i64}>
+//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [128, 2, 1] subgroup_size = 32, {pipeline_depth = 3 : i64, store_stage = 1 : i64}>
 //      SM80: func.func @large_matmul_f16()
 // SM80-SAME:     translation_info = #[[TRANSLATION]]
 //      SM80: linalg.fill
-// SM80-SAME:     lowering_config = #[[CONFIG]]
 //      SM80: linalg.matmul
 // SM80-SAME:     lowering_config = #[[CONFIG]]
 
@@ -530,11 +523,10 @@ func.func @large_matmul_f32() {
 }
 
 //  SM80-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[128, 256, 16]{{\]}}
-//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [128, 2, 1] subgroup_size = 32, {pipeline_depth = 4 : i64, store_stage = 1 : i64}>
+//  SM80-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUMatmulTensorCoreMmaSync workgroup_size = [128, 2, 1] subgroup_size = 32, {pipeline_depth = 4 : i64, store_stage = 1 : i64}>
 //      SM80: func.func @large_matmul_f32()
 // SM80-SAME:     translation_info = #[[TRANSLATION]]
 //      SM80: linalg.fill
-// SM80-SAME:     lowering_config = #[[CONFIG]]
 //      SM80: linalg.matmul
 // SM80-SAME:     lowering_config = #[[CONFIG]]
 
@@ -563,7 +555,7 @@ func.func @inner_unit_dim() {
   return
 }
 
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 1, 1] subgroup_size = 32>
 //      CHECK: func.func @inner_unit_dim()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK:   linalg.generic
@@ -612,12 +604,11 @@ func.func @forward_dispatch_1_conv_2d_nhwc_hwcf_256x112x112x64x7x7x3_f32() {
   return
 }
 
-//  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 1, 8, 64, 1, 1, 4], [0, 1, 0, 0]{{\]}}
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUVectorize workgroup_size = [16, 2, 1]>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 1, 1]
 //      CHECK: func.func @forward_dispatch_1_conv_2d_nhwc_hwcf_256x112x112x64x7x7x3_f32
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
-//      CHECK:   linalg.generic
-// CHECK-SAME:       lowering_config = #[[CONFIG]]
+//      CHECK:   linalg.conv_2d
+// CHECK-SAME:       lowering_config =  #iree_gpu.lowering_config<{promote_operands = [0, 1], reduction = [0, 0, 0, 0, 1, 7, 3], thread = [1, 1, 1, 1, 0, 0, 0], workgroup = [1, 1, 1, 32, 0, 0, 0]}>
 
 // -----
 
@@ -660,14 +651,12 @@ func.func @_main_dispatch_15_generic_512x4x42x42x64_f32() {
   return
 }
 
-//   CHECK-DAG:  #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 1, 32, 128, 32]{{\]}}
-//   CHECK-DAG:  #[[TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUMatmulSimt workgroup_size = [32, 8, 1] subgroup_size = 32, {pipeline_depth = 0 : i64, store_stage = 1 : i64}>
+//       CHECK:  #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse workgroup_size = [32, 8, 1] subgroup_size = 32, {gpu_pipeline_options = #iree_gpu.pipeline_options<prefetch_shared_memory = false, no_reduce_shared_memory_bank_conflicts = true, use_igemm_convolution = false>}>
 //       CHECK:  func.func @_main_dispatch_15_generic_512x4x42x42x64_f32()
 //  CHECK-SAME:    translation_info = #[[TRANSLATION]]
 //       CHECK:  linalg.fill
-//  CHECK-SAME:      lowering_config = #[[CONFIG]]
 //       CHECK:  linalg.generic
-//  CHECK-SAME:      lowering_config = #[[CONFIG]]
+//  CHECK-SAME:     lowering_config = #iree_gpu.lowering_config<{reduction = [0, 0, 0, 0, 32], thread = [1, 1, 1, 16, 0], workgroup = [1, 1, 32, 128, 1]}>
 
 // -----
 
@@ -743,8 +732,8 @@ func.func @i4_dequant_matvec() {
   return
 }
 
-//   CHECK-DAG: #[[$CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 1], [0, 0, 256]{{\]}}>
-//   CHECK-DAG: #[[$TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUWarpReduction workgroup_size = [64, 1, 1] subgroup_size = 32>
+//   CHECK-DAG: #[[$CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 1], [0, 0, 32]{{\]}}>
+//   CHECK-DAG: #[[$TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUWarpReduction workgroup_size = [32, 1, 1]>
 // CHECK-LABEL: func.func @i4_dequant_matvec()
 //  CHECK-SAME:   translation_info = #[[$TRANSLATION]]
 //       CHECK:   linalg.generic

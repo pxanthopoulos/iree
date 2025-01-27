@@ -19,7 +19,7 @@ func.func @static_1d_sort() {
 // Check that the workgroup count and size are (1, 1, 1) for serializing the computation.
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = []>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<SPIRVBaseDistribute workgroup_size = [1, 1, 1]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = SPIRVBaseDistribute workgroup_size = [1, 1, 1]>
 //       CHECK: func.func @static_1d_sort()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK:   iree_linalg_ext.sort
@@ -51,7 +51,7 @@ func.func @static_3d_sort() {
 }
 
 //  CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 0, 64], [1, 0, 1]{{\]}}>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<SPIRVBaseDistribute workgroup_size = [64, 1, 1]>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = SPIRVBaseDistribute workgroup_size = [64, 1, 1]>
 //      CHECK: func.func @static_3d_sort()
 // CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //      CHECK:   iree_linalg_ext.sort
@@ -79,7 +79,7 @@ func.func @static_1d_fft_stage2() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[4]{{\]}}>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<SPIRVBaseDistribute workgroup_size = [64, 1, 1]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = SPIRVBaseDistribute workgroup_size = [64, 1, 1]>
 //       CHECK: func.func @static_1d_fft_stage2()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK:   iree_linalg_ext.fft
@@ -99,8 +99,8 @@ func.func @static_3d_fft_stage3() {
   %c32 = arith.constant 32 : index
   %cst = arith.constant dense<[1.000000e+00, 0.707106769, 6.12323426E-17, -0.707106769]> : tensor<4xf32>
   %cst_0 = arith.constant dense<[-0.000000e+00, -0.707106769, -1.000000e+00, -0.707106769]> : tensor<4xf32>
-  %0 = bufferization.to_memref %cst_0 : memref<4xf32>
-  %1 = bufferization.to_memref %cst : memref<4xf32>
+  %0 = bufferization.to_memref %cst_0 : tensor<4xf32> to memref<4xf32>
+  %1 = bufferization.to_memref %cst : tensor<4xf32> to memref<4xf32>
   %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) : memref<64x128x32xf32>
   %3 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) : memref<64x128x32xf32>
   iree_linalg_ext.fft ins(%c3, %1, %0 : index, memref<4xf32>, memref<4xf32>) outs(%2, %3 : memref<64x128x32xf32>, memref<64x128x32xf32>)
@@ -108,7 +108,7 @@ func.func @static_3d_fft_stage3() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 1, 8]{{\]}}>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<SPIRVBaseDistribute workgroup_size = [64, 1, 1]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = SPIRVBaseDistribute workgroup_size = [64, 1, 1]>
 //       CHECK: func.func @static_3d_fft_stage3()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK:   iree_linalg_ext.fft
@@ -132,7 +132,7 @@ func.func @winograd_input_transform() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 0, 0, 32], [1, 1, 1, 1], [0, 0, 0, 0]]>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<SPIRVWinogradVectorize workgroup_size = [32, 4, 4]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = SPIRVWinogradVectorize workgroup_size = [32, 4, 4]>
 //       CHECK: func.func @winograd_input_transform()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK:   iree_linalg_ext.winograd.input_transform
@@ -156,7 +156,7 @@ func.func @winograd_output_transform() {
 }
 
 //   CHECK-DAG: #[[CONFIG:.+]] = #iree_codegen.lowering_config<tile_sizes = {{\[}}[1, 0, 0, 32], [1, 1, 1, 1], [0, 0, 0, 0]]>
-//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<SPIRVWinogradVectorize workgroup_size = [32, 4, 4]>
+//   CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = SPIRVWinogradVectorize workgroup_size = [32, 4, 4]>
 //       CHECK: func.func @winograd_output_transform()
 //  CHECK-SAME:     translation_info = #[[TRANSLATION]]
 //       CHECK:   iree_linalg_ext.winograd.output_transform

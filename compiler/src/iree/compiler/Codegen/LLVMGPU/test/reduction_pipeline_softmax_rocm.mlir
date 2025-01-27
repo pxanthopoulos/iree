@@ -1,5 +1,5 @@
 // RUN: iree-opt --split-input-file --iree-gpu-test-target=gfx1100 --pass-pipeline="builtin.module(func.func(iree-codegen-decompose-softmax), iree-llvmgpu-select-lowering-strategy,  func.func(iree-llvmgpu-lower-executable-target))" %s | FileCheck %s
-// RUN: iree-opt --split-input-file --iree-gpu-test-target=gfx940 --pass-pipeline="builtin.module(func.func(iree-codegen-decompose-softmax), iree-llvmgpu-select-lowering-strategy,  func.func(iree-llvmgpu-lower-executable-target))" %s | FileCheck %s --check-prefix=CDNA3
+// RUN: iree-opt --split-input-file --iree-gpu-test-target=gfx942 --pass-pipeline="builtin.module(func.func(iree-codegen-decompose-softmax), iree-llvmgpu-select-lowering-strategy,  func.func(iree-llvmgpu-lower-executable-target))" %s | FileCheck %s --check-prefix=CDNA3
 
 #pipeline_layout = #hal.pipeline.layout<bindings = [
   #hal.pipeline.binding<storage_buffer>,
@@ -19,7 +19,7 @@ func.func @softmax() {
   return
 }
 
-//          CHECK: #[[$TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUWarpReduction workgroup_size = [1024, 1, 1] subgroup_size = 32>
+//          CHECK: #[[$TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUWarpReduction workgroup_size = [1024, 1, 1] subgroup_size = 32>
 //    CHECK-LABEL: func.func @softmax
 //     CHECK-SAME:     translation_info = #[[$TRANSLATION]]
 // CHECK-COUNT-20:   gpu.shuffle  xor{{.*}}{{[[:space:]].*}}{{.*}}
@@ -46,7 +46,7 @@ func.func @softmax() {
 
 // On CDNA, we prefer wave64 with subgroup size 64.
 
-//          CDNA3: #[[$TRANSLATION:.+]] = #iree_codegen.translation_info<LLVMGPUWarpReduction workgroup_size = [1024, 1, 1] subgroup_size = 64>
+//          CDNA3: #[[$TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = LLVMGPUWarpReduction workgroup_size = [1024, 1, 1] subgroup_size = 64>
 //          CDNA3: func.func @softmax
 //     CDNA3-SAME:      translation_info = #[[$TRANSLATION]]
 // CDNA3-COUNT-20:   gpu.shuffle  xor{{.*}}{{[[:space:]].*}}{{.*}}

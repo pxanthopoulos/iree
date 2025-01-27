@@ -1,7 +1,20 @@
+# Copyright 2024 The IREE Authors
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 import pytest
 
 
 def pytest_addoption(parser):
+    parser.addoption(
+        "--goldentime-tolerance-multiplier",
+        action="store",
+        default=1.0,
+        type=float,
+        help="Multiplier to use for time regression checking. For example, 1.1 will allow regressions of up to 10%",
+    )
     parser.addoption(
         "--goldentime-rocm-e2e-ms",
         action="store",
@@ -10,6 +23,18 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--goldentime-rocm-unet-ms",
+        action="store",
+        type=float,
+        help="Golden time to test benchmark",
+    )
+    parser.addoption(
+        "--goldentime-rocm-punet-int8-fp16-ms",
+        action="store",
+        type=float,
+        help="Golden time to test benchmark",
+    )
+    parser.addoption(
+        "--goldentime-rocm-punet-int8-fp8-ms",
         action="store",
         type=float,
         help="Golden time to test benchmark",
@@ -34,6 +59,20 @@ def pytest_addoption(parser):
         help="Golden dispatch count to test benchmark",
     )
     parser.addoption(
+        "--goldendispatch-rocm-punet-int8-fp16",
+        action="store",
+        default=1284,
+        type=int,
+        help="Golden dispatch count to test benchmark",
+    )
+    parser.addoption(
+        "--goldendispatch-rocm-punet-int8-fp8",
+        action="store",
+        default=1276,
+        type=int,
+        help="Golden dispatch count to test benchmark",
+    )
+    parser.addoption(
         "--goldendispatch-rocm-clip",
         action="store",
         default=1571,
@@ -51,6 +90,20 @@ def pytest_addoption(parser):
         "--goldensize-rocm-unet-bytes",
         action="store",
         default=2088217,
+        type=int,
+        help="Golden vmfb size to test benchmark",
+    )
+    parser.addoption(
+        "--goldensize-rocm-punet-int8-fp16-bytes",
+        action="store",
+        default=2065046,
+        type=int,
+        help="Golden vmfb size to test benchmark",
+    )
+    parser.addoption(
+        "--goldensize-rocm-punet-int8-fp8-bytes",
+        action="store",
+        default=2065046,
         type=int,
         help="Golden vmfb size to test benchmark",
     )
@@ -78,6 +131,11 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture
+def goldentime_tolerance_multiplier(request):
+    return request.config.getoption("--goldentime-tolerance-multiplier")
+
+
+@pytest.fixture
 def goldentime_rocm_e2e(request):
     return request.config.getoption("--goldentime-rocm-e2e-ms")
 
@@ -85,6 +143,16 @@ def goldentime_rocm_e2e(request):
 @pytest.fixture
 def goldentime_rocm_unet(request):
     return request.config.getoption("--goldentime-rocm-unet-ms")
+
+
+@pytest.fixture
+def goldentime_rocm_punet_int8_fp16(request):
+    return request.config.getoption("--goldentime-rocm-punet-int8-fp16-ms")
+
+
+@pytest.fixture
+def goldentime_rocm_punet_int8_fp8(request):
+    return request.config.getoption("--goldentime-rocm-punet-int8-fp8-ms")
 
 
 @pytest.fixture
@@ -103,6 +171,16 @@ def goldendispatch_rocm_unet(request):
 
 
 @pytest.fixture
+def goldendispatch_rocm_punet_int8_fp16(request):
+    return request.config.getoption("--goldendispatch-rocm-punet-int8-fp16")
+
+
+@pytest.fixture
+def goldendispatch_rocm_punet_int8_fp8(request):
+    return request.config.getoption("--goldendispatch-rocm-punet-int8-fp8")
+
+
+@pytest.fixture
 def goldendispatch_rocm_clip(request):
     return request.config.getoption("--goldendispatch-rocm-clip")
 
@@ -115,6 +193,16 @@ def goldendispatch_rocm_vae(request):
 @pytest.fixture
 def goldensize_rocm_unet(request):
     return request.config.getoption("--goldensize-rocm-unet-bytes")
+
+
+@pytest.fixture
+def goldensize_rocm_punet_int8_fp16(request):
+    return request.config.getoption("--goldensize-rocm-punet-int8-fp16-bytes")
+
+
+@pytest.fixture
+def goldensize_rocm_punet_int8_fp8(request):
+    return request.config.getoption("--goldensize-rocm-punet-int8-fp8-bytes")
 
 
 @pytest.fixture

@@ -9,7 +9,7 @@
 #pipeline_layout = #hal.pipeline.layout<bindings = [
   #hal.pipeline.binding<storage_buffer>
 ]>
-#translation_info = #iree_codegen.translation_info<None workgroup_size = [64, 1, 1] subgroup_size = 32>
+#translation_info = #iree_codegen.translation_info<pipeline = None workgroup_size = [64, 1, 1] subgroup_size = 32>
 func.func @reduce_dispatch_0() attributes {translation_info = #translation_info} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -24,7 +24,7 @@ func.func @reduce_dispatch_0() attributes {translation_info = #translation_info}
   // WARP-EXECUTE: %[[COND32:.*]] = arith.cmpi ult, %[[TIDX]], %[[C32]] : index
   // Single-warp guard filters out threads 32-63.
   // WARP-EXECUTE: scf.if %[[COND32]] {
-  // WARP-EXECUTE:   vector.warp_execute_on_lane_0(%[[TIDX]])[32] {
+  // WARP-EXECUTE:   gpu.warp_execute_on_lane_0(%[[TIDX]])[32] {
   // WARP-EXECUTE:     %[[V:.*]] = "some_def"() : () -> vector<128xf32>
   // WARP-EXECUTE:     vector.transfer_write %[[V]], %{{.*}} {in_bounds = [true]} : vector<128xf32>, memref<128xf32>
 

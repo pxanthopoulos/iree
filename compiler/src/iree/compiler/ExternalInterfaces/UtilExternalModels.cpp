@@ -12,12 +12,15 @@
 #include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
+#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MLProgram/IR/MLProgram.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 
 namespace mlir::iree_compiler {
 
@@ -26,6 +29,21 @@ namespace {
 //===----------------------------------------------------------------------===//
 // InferIntDivisibilityOpInterface
 //===----------------------------------------------------------------------===//
+
+static IREE::Util::ConstantIntDivisibility
+getDivisibilityOfOperand(Value v,
+                         IREE::Util::IntegerDivisibility divisibility) {
+  if (!divisibility.isUninitialized()) {
+    return divisibility.getValue();
+  }
+  APInt intVal;
+  if (matchPattern(v, m_ConstantInt(&intVal))) {
+    uint64_t udiv = intVal.getZExtValue();
+    uint64_t sdiv = std::abs(intVal.getSExtValue());
+    return IREE::Util::ConstantIntDivisibility(udiv, sdiv);
+  }
+  return IREE::Util::ConstantIntDivisibility(1, 1);
+}
 
 struct ArithConstantInferIntDivisibilityOpInterface
     : public IREE::Util::InferIntDivisibilityOpInterface::ExternalModel<
@@ -54,17 +72,63 @@ struct ArithMulIInferIntDivisibilityOpInterface
       Operation *op, ArrayRef<IREE::Util::IntegerDivisibility> argDivs,
       IREE::Util::SetIntDivisibilityFn setResultDivs) const {
     auto mulOp = cast<arith::MulIOp>(op);
+
+    auto lhsDivisibility = getDivisibilityOfOperand(mulOp.getLhs(), argDivs[0]);
+    auto rhsDivisibility = getDivisibilityOfOperand(mulOp.getRhs(), argDivs[1]);
+
+    uint64_t mulUDiv = lhsDivisibility.udiv() * rhsDivisibility.udiv();
+    uint64_t mulSDiv = lhsDivisibility.sdiv() * rhsDivisibility.sdiv();
+
+    setResultDivs(mulOp.getResult(),
+                  IREE::Util::ConstantIntDivisibility(mulUDiv, mulSDiv));
+  }
+};
+
+struct ArithDivUIInferIntDivisibilityOpInterface
+    : public IREE::Util::InferIntDivisibilityOpInterface::ExternalModel<
+          ArithDivUIInferIntDivisibilityOpInterface, arith::DivUIOp> {
+
+  void inferResultDivisibility(
+      Operation *op, ArrayRef<IREE::Util::IntegerDivisibility> argDivs,
+      IREE::Util::SetIntDivisibilityFn setResultDivs) const {
+    auto divOp = cast<arith::DivUIOp>(op);
+
     APInt intVal;
-    if (!matchPattern(mulOp.getLhs(), m_ConstantInt(&intVal))) {
-      if (!matchPattern(mulOp.getRhs(), m_ConstantInt(&intVal))) {
-        return;
-      }
+    if (!matchPattern(divOp.getRhs(), m_ConstantInt(&intVal))) {
+      return;
     }
 
-    uint64_t udiv = intVal.getZExtValue();
-    uint64_t sdiv = std::abs(intVal.getSExtValue());
-    setResultDivs(mulOp.getResult(),
-                  IREE::Util::ConstantIntDivisibility(udiv, sdiv));
+    auto lhsDivisibility = getDivisibilityOfOperand(divOp.getLhs(), argDivs[0]);
+
+    uint64_t divUDiv = lhsDivisibility.udiv() / intVal.getZExtValue();
+    uint64_t divSDiv = lhsDivisibility.sdiv() / std::abs(intVal.getSExtValue());
+
+    setResultDivs(divOp, IREE::Util::ConstantIntDivisibility(divUDiv, divSDiv));
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// ValueBoundsOpInterface
+//===----------------------------------------------------------------------===//
+
+/// For some reason, this interface has to be done as an external model.
+struct UtilAssumeIntValueBoundsOpInterface
+    : public ValueBoundsOpInterface::ExternalModel<
+          UtilAssumeIntValueBoundsOpInterface, IREE::Util::AssumeIntOp> {
+  void populateBoundsForIndexValue(Operation *op, Value value,
+                                   ValueBoundsConstraintSet &cstr) const {
+    auto assumeOp = cast<IREE::Util::AssumeIntOp>(op);
+    auto result = cast<OpResult>(value);
+    assert(result.getOwner() == op && "value is a result of this index op");
+    auto [min, max] =
+        assumeOp.getUnionedUnsignedRange(result.getResultNumber());
+
+    if (min) {
+      cstr.bound(result) >= *min;
+    }
+    if (max) {
+      cstr.bound(result) <= *max;
+    }
   }
 };
 
@@ -353,6 +417,8 @@ void registerUtilExternalModels(DialectRegistry &registry) {
         ArithConstantInferIntDivisibilityOpInterface>(*context);
     arith::MulIOp::attachInterface<ArithMulIInferIntDivisibilityOpInterface>(
         *context);
+    arith::DivUIOp::attachInterface<ArithDivUIInferIntDivisibilityOpInterface>(
+        *context);
   });
 
   registry.addExtension(
@@ -450,6 +516,11 @@ void registerUtilExternalModels(DialectRegistry &registry) {
         AlwaysHoistableOpInterfaceHelper<
             tensor::PadOp, tensor::PackOp,
             tensor::UnPackOp>::registerOpInterface(context);
+      });
+  registry.addExtension(
+      +[](MLIRContext *context, IREE::Util::UtilDialect *dialect) {
+        IREE::Util::AssumeIntOp::attachInterface<
+            UtilAssumeIntValueBoundsOpInterface>(*context);
       });
 }
 

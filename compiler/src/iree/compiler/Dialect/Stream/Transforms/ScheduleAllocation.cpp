@@ -107,10 +107,10 @@ static void computeRegionValueAliases(Operation *regionOp,
 
   // Filter out to only resource results - some regions may return additional
   // things like stream.async.execute returning a timepoint.
-  auto resourceResults = llvm::to_vector_of<OpResult>(
-      llvm::make_filter_range(regionOp->getResults(), [](OpResult result) {
+  auto resourceResults =
+      llvm::filter_to_vector(regionOp->getResults(), [](OpResult result) {
         return llvm::isa<IREE::Stream::ResourceType>(result.getType());
-      }));
+      });
 
   // Start with outputs so that we handle tied values that may lead all the way
   // back up the chain to the stream inputs.
@@ -249,6 +249,12 @@ computeExecutionRegionLivenessIntervals(IREE::Stream::AsyncExecuteOp executeOp,
         for (auto value : op->getResults()) {
           if (!llvm::isa<IREE::Stream::ResourceType>(value.getType()))
             continue;
+          if (auto tiedOp = dyn_cast<Util::TiedOpInterface>(op)) {
+            // Skip tied results as their liveness is determined by the tied
+            // operand.
+            if (tiedOp.getTiedResultOperand(value))
+              continue;
+          }
           if (!value.use_empty())
             continue;
           LivenessInterval interval;
@@ -664,6 +670,24 @@ applyAsyncCollectiveOp(IREE::Stream::AsyncCollectiveOp asyncOp,
   return success();
 }
 
+static LogicalResult applyAsyncBarrierOp(IREE::Stream::AsyncBarrierOp barrierOp,
+                                         AllocationScope &scope,
+                                         OpBuilder builder) {
+  // TODO: barriers are being treated as copies, they should just be metadata
+  // operations but currently it's causing failures to be removed.
+  auto sourceRange = scope.lookupResourceRange(barrierOp.getSource());
+  auto targetRange = scope.lookupResourceRange(barrierOp.getResult());
+
+  // Perform the copy.
+  builder.create<IREE::Stream::CmdCopyOp>(
+      barrierOp.getLoc(), sourceRange.resource, sourceRange.resourceSize,
+      sourceRange.offset, targetRange.resource, targetRange.resourceSize,
+      targetRange.offset, sourceRange.length);
+
+  barrierOp.erase();
+  return success();
+}
+
 static LogicalResult applyAsyncTransferOp(IREE::Stream::AsyncTransferOp asyncOp,
                                           AllocationScope &scope,
                                           OpBuilder builder) {
@@ -986,6 +1010,9 @@ static LogicalResult applyAsyncAllocations(Region &region,
                    .Case([&](IREE::Stream::AsyncCollectiveOp op) {
                      return applyAsyncCollectiveOp(op, scope, OpBuilder(op));
                    })
+                   .Case([&](IREE::Stream::AsyncBarrierOp op) {
+                     return applyAsyncBarrierOp(op, scope, OpBuilder(op));
+                   })
                    .Case([&](IREE::Stream::AsyncTransferOp op) {
                      return applyAsyncTransferOp(op, scope, OpBuilder(op));
                    })
@@ -1257,12 +1284,12 @@ static std::optional<ConstantAllocation>
 extractConstantsWithLifetime(IREE::Stream::AsyncExecuteOp executeOp,
                              IREE::Stream::Lifetime lifetime,
                              OpBuilder &externalBuilder) {
-  auto constantOps = llvm::to_vector(llvm::make_filter_range(
+  auto constantOps = llvm::filter_to_vector(
       executeOp.getOps<IREE::Stream::AsyncConstantOp>(),
       [&](IREE::Stream::AsyncConstantOp op) {
         return cast<IREE::Stream::ResourceType>(op.getResult().getType())
                    .getLifetime() == lifetime;
-      }));
+      });
   if (constantOps.empty())
     return {};
 

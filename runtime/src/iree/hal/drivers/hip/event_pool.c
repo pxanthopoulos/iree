@@ -14,6 +14,7 @@
 #include "iree/base/internal/atomics.h"
 #include "iree/base/internal/synchronization.h"
 #include "iree/hal/api.h"
+#include "iree/hal/drivers/hip/context_util.h"
 #include "iree/hal/drivers/hip/dynamic_symbols.h"
 #include "iree/hal/drivers/hip/status_util.h"
 
@@ -76,7 +77,7 @@ static inline iree_status_t iree_hal_hip_event_create(
   event->pool = pool;
   event->hip_event = NULL;
 
-  iree_status_t status = IREE_HIP_RESULT_TO_STATUS(
+  iree_status_t status = IREE_HIP_CALL_TO_STATUS(
       symbols,
       hipEventCreateWithFlags(&event->hip_event, hipEventDisableTiming),
       "hipEventCreateWithFlags");
@@ -100,6 +101,9 @@ static void iree_hal_hip_event_pool_release_event(
     iree_hal_hip_event_t** events);
 
 void iree_hal_hip_event_release(iree_hal_hip_event_t* event) {
+  if (!event) {
+    return;
+  }
   if (iree_atomic_ref_count_dec(&event->ref_count) == 1) {
     iree_hal_hip_event_pool_t* pool = event->pool;
     // Release back to the pool if the reference count becomes 0.
@@ -121,6 +125,8 @@ struct iree_hal_hip_event_pool_t {
   iree_allocator_t host_allocator;
   // The symbols used to create and destroy hipEvent_t objects.
   const iree_hal_hip_dynamic_symbols_t* symbols;
+
+  hipCtx_t device_context;
 
   // Guards event related fields in the pool. We don't expect a performant
   // program to frequently allocate events for synchronization purposes; the
@@ -144,7 +150,7 @@ static void iree_hal_hip_event_pool_free(iree_hal_hip_event_pool_t* event_pool);
 iree_status_t iree_hal_hip_event_pool_allocate(
     const iree_hal_hip_dynamic_symbols_t* symbols,
     iree_host_size_t available_capacity, iree_allocator_t host_allocator,
-    iree_hal_hip_event_pool_t** out_event_pool) {
+    hipCtx_t device_context, iree_hal_hip_event_pool_t** out_event_pool) {
   IREE_ASSERT_ARGUMENT(symbols);
   IREE_ASSERT_ARGUMENT(out_event_pool);
   *out_event_pool = NULL;
@@ -163,13 +169,16 @@ iree_status_t iree_hal_hip_event_pool_allocate(
   iree_slim_mutex_initialize(&event_pool->event_mutex);
   event_pool->available_capacity = available_capacity;
   event_pool->available_count = 0;
+  event_pool->device_context = device_context;
 
-  iree_status_t status = iree_ok_status();
-  for (iree_host_size_t i = 0; i < available_capacity; ++i) {
-    status = iree_hal_hip_event_create(
-        symbols, event_pool, host_allocator,
-        &event_pool->available_list[event_pool->available_count++]);
-    if (!iree_status_is_ok(status)) break;
+  iree_status_t status = iree_hal_hip_set_context(symbols, device_context);
+  if (iree_status_is_ok(status)) {
+    for (iree_host_size_t i = 0; i < available_capacity; ++i) {
+      status = iree_hal_hip_event_create(
+          symbols, event_pool, host_allocator,
+          &event_pool->available_list[event_pool->available_count++]);
+      if (!iree_status_is_ok(status)) break;
+    }
   }
 
   if (iree_status_is_ok(status)) {
@@ -204,6 +213,9 @@ void iree_hal_hip_event_pool_retain(iree_hal_hip_event_pool_t* event_pool) {
 }
 
 void iree_hal_hip_event_pool_release(iree_hal_hip_event_pool_t* event_pool) {
+  if (!event_pool) {
+    return;
+  }
   if (iree_atomic_ref_count_dec(&event_pool->ref_count) == 1) {
     iree_hal_hip_event_pool_free(event_pool);
   }
@@ -237,22 +249,24 @@ iree_status_t iree_hal_hip_event_pool_acquire(
 
   // Allocate the rest of the events.
   if (remaining_count > 0) {
-    IREE_TRACE_ZONE_BEGIN_NAMED(z1, "event-pool-unpooled-acquire");
-    iree_status_t status = iree_ok_status();
+    IREE_TRACE_ZONE_APPEND_TEXT(z0, "unpooled acquire");
+    IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, (int64_t)remaining_count);
+
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_hip_set_context(event_pool->symbols,
+                                     event_pool->device_context));
     for (iree_host_size_t i = 0; i < remaining_count; ++i) {
-      status = iree_hal_hip_event_create(event_pool->symbols, event_pool,
-                                         event_pool->host_allocator,
-                                         &out_events[from_pool_count + i]);
+      iree_status_t status = iree_hal_hip_event_create(
+          event_pool->symbols, event_pool, event_pool->host_allocator,
+          &out_events[from_pool_count + i]);
       if (!iree_status_is_ok(status)) {
         // Must release all events we've acquired so far.
         iree_hal_hip_event_pool_release_event(event_pool, from_pool_count + i,
                                               out_events);
-        IREE_TRACE_ZONE_END(z1);
         IREE_TRACE_ZONE_END(z0);
         return status;
       }
     }
-    IREE_TRACE_ZONE_END(z1);
   }
 
   // Retain a reference to a pool when we pass event to the caller. When the
@@ -298,11 +312,11 @@ static void iree_hal_hip_event_pool_release_event(
   // Deallocate the rest of the events. We don't bother resetting them as we are
   // getting rid of them.
   if (remaining_count > 0) {
-    IREE_TRACE_ZONE_BEGIN_NAMED(z1, "event-pool-unpooled-release");
+    IREE_TRACE_ZONE_APPEND_TEXT(z0, "unpooled release");
+    IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, (int64_t)remaining_count);
     for (iree_host_size_t i = 0; i < remaining_count; ++i) {
       iree_hal_hip_event_destroy(events[to_pool_count + i]);
     }
-    IREE_TRACE_ZONE_END(z1);
   }
   IREE_TRACE_ZONE_END(z0);
 }

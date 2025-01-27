@@ -13,6 +13,7 @@
 #include "iree/compiler/Codegen/Transforms/Transforms.h"
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
+#include "iree/compiler/Codegen/Utils/Utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Analysis/Liveness.h"
@@ -35,31 +36,6 @@
 #define DEBUG_TYPE "iree-codegen-transforms"
 
 namespace mlir::iree_compiler {
-
-static bool isAllConstantValue(ArrayRef<OpFoldResult> ofrs, int64_t v) {
-  return llvm::all_of(
-      ofrs, [&](OpFoldResult ofr) { return isConstantIntValue(ofr, v); });
-}
-
-static bool isFullSlice(ArrayRef<OpFoldResult> mixedOffsets,
-                        ArrayRef<OpFoldResult> mixedSizes,
-                        ArrayRef<OpFoldResult> mixedStrides,
-                        IREE::Flow::DispatchTensorType tensorType,
-                        ValueRange dynamicDims) {
-  OpBuilder builder(tensorType.getContext());
-  SmallVector<int64_t> tensorShape = llvm::to_vector(tensorType.getShape());
-  SmallVector<OpFoldResult> mixedTensorShape =
-      mlir::getMixedValues(tensorShape, dynamicDims, builder);
-  return isAllConstantValue(mixedOffsets, 0) &&
-         isAllConstantValue(mixedStrides, 1) && mixedTensorShape == mixedSizes;
-}
-static bool isFullSlice(OffsetSizeAndStrideOpInterface sliceLoadStoreOp,
-                        IREE::Flow::DispatchTensorType tensorType,
-                        ValueRange dynamicDims) {
-  return isFullSlice(
-      sliceLoadStoreOp.getMixedOffsets(), sliceLoadStoreOp.getMixedSizes(),
-      sliceLoadStoreOp.getMixedStrides(), tensorType, dynamicDims);
-}
 
 static bool sliceFilter(Operation *op, ValueRange nonIndexComputationOperands,
                         Operation *baseOp) {
@@ -91,10 +67,10 @@ static SliceAndDynamicDims cloneOffsetsSizesAndStridesImpl(
     SmallVector<OpFoldResult> clonedOfrs;
     clonedOfrs.reserve(ofrs.size());
     for (auto ofr : ofrs) {
-      if (ofr.is<Attribute>()) {
+      if (isa<Attribute>(ofr)) {
         clonedOfrs.push_back(ofr);
       } else {
-        clonedOfrs.push_back(bvm.lookupOrDefault(ofr.get<Value>()));
+        clonedOfrs.push_back(bvm.lookupOrDefault(cast<Value>(ofr)));
       }
     }
     return clonedOfrs;
@@ -530,17 +506,30 @@ void moveLoopInvariantCodeFromGuaranteedLoops(Operation *target) {
         loopLike.getLoopLowerBounds();
     std::optional<SmallVector<OpFoldResult>> maybeUpperBounds =
         loopLike.getLoopUpperBounds();
-    if (!maybeLowerBounds || !maybeUpperBounds) {
+    std::optional<SmallVector<Value>> maybeIvs =
+        loopLike.getLoopInductionVars();
+    if (!maybeLowerBounds || !maybeUpperBounds || !maybeIvs) {
       return;
     }
 
     // If any lower + upper bound pair cannot be definitely verified as lb < ub
     // then the loop may have a zero trip count.
-    for (auto [lb, ub] :
-         llvm::zip_equal(*maybeLowerBounds, *maybeUpperBounds)) {
-      if (!ValueBoundsConstraintSet::compare(lb, ValueBoundsConstraintSet::LT,
-                                             ub)) {
-        return;
+    for (auto [lb, ub, iv] :
+         llvm::zip_equal(*maybeLowerBounds, *maybeUpperBounds, *maybeIvs)) {
+      if (iv.getType().isIndex()) {
+        if (!ValueBoundsConstraintSet::compare(lb, ValueBoundsConstraintSet::LT,
+                                               ub)) {
+          return;
+        }
+      } else {
+        // Weaker test for non-`index` operands to some loops
+        // like scf.for, since the value bounds interface requires index types.
+        auto maybeLb = getConstantIntValue(lb);
+        auto maybeUb = getConstantIntValue(ub);
+        if (!maybeLb || !maybeUb)
+          return;
+        if (*maybeLb >= *maybeUb)
+          return;
       }
     }
 
@@ -1280,7 +1269,7 @@ LogicalResult tileLinalgOpsWithFilter(mlir::FunctionOpInterface funcOp,
     for (auto tiledOp : tiledResults->tiledOps) {
       filter.replaceLinalgTransformationFilter(rewriter, tiledOp);
     }
-    rewriter.replaceOp(op, tiledResults->replacements);
+    rewriter.replaceOp(op, tiledResults->mergeResult.replacements);
   }
 
   return success();

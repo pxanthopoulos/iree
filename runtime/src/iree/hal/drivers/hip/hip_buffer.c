@@ -11,14 +11,19 @@
 #include <string.h>
 
 #include "iree/base/api.h"
+#include "iree/base/internal/synchronization.h"
 #include "iree/base/tracing.h"
 
 typedef struct iree_hal_hip_buffer_t {
   iree_hal_buffer_t base;
+  iree_allocator_t host_allocator;
   iree_hal_hip_buffer_type_t type;
   void* host_ptr;
   hipDeviceptr_t device_ptr;
   iree_hal_buffer_release_callback_t release_callback;
+  iree_slim_mutex_t device_ptr_lock;
+  iree_notification_t device_ptr_notification;
+  bool empty;
 } iree_hal_hip_buffer_t;
 
 static const iree_hal_buffer_vtable_t iree_hal_hip_buffer_vtable;
@@ -36,7 +41,7 @@ static const iree_hal_hip_buffer_t* iree_hal_hip_buffer_const_cast(
 }
 
 iree_status_t iree_hal_hip_buffer_wrap(
-    iree_hal_allocator_t* allocator, iree_hal_memory_type_t memory_type,
+    iree_hal_buffer_placement_t placement, iree_hal_memory_type_t memory_type,
     iree_hal_memory_access_t allowed_access,
     iree_hal_buffer_usage_t allowed_usage, iree_device_size_t allocation_size,
     iree_device_size_t byte_offset, iree_device_size_t byte_length,
@@ -44,6 +49,7 @@ iree_status_t iree_hal_hip_buffer_wrap(
     void* host_ptr, iree_hal_buffer_release_callback_t release_callback,
     iree_allocator_t host_allocator, iree_hal_buffer_t** out_buffer) {
   IREE_ASSERT_ARGUMENT(out_buffer);
+  *out_buffer = NULL;
   if (!host_ptr && iree_any_bit_set(allowed_usage,
                                     IREE_HAL_BUFFER_USAGE_MAPPING_PERSISTENT |
                                         IREE_HAL_BUFFER_USAGE_MAPPING_SCOPED)) {
@@ -57,14 +63,18 @@ iree_status_t iree_hal_hip_buffer_wrap(
   iree_status_t status =
       iree_allocator_malloc(host_allocator, sizeof(*buffer), (void**)&buffer);
   if (iree_status_is_ok(status)) {
-    iree_hal_buffer_initialize(host_allocator, allocator, &buffer->base,
-                               allocation_size, byte_offset, byte_length,
-                               memory_type, allowed_access, allowed_usage,
+    iree_hal_buffer_initialize(placement, &buffer->base, allocation_size,
+                               byte_offset, byte_length, memory_type,
+                               allowed_access, allowed_usage,
                                &iree_hal_hip_buffer_vtable, &buffer->base);
+    buffer->host_allocator = host_allocator;
     buffer->type = buffer_type;
     buffer->host_ptr = host_ptr;
     buffer->device_ptr = device_ptr;
     buffer->release_callback = release_callback;
+    buffer->empty = false;
+    iree_slim_mutex_initialize(&buffer->device_ptr_lock);
+    iree_notification_initialize(&buffer->device_ptr_notification);
     *out_buffer = &buffer->base;
   }
 
@@ -72,14 +82,36 @@ iree_status_t iree_hal_hip_buffer_wrap(
   return status;
 }
 
+void iree_hal_hip_buffer_set_device_pointer(iree_hal_buffer_t* base_buffer,
+                                            hipDeviceptr_t pointer) {
+  iree_hal_hip_buffer_t* buffer = iree_hal_hip_buffer_cast(base_buffer);
+  IREE_ASSERT(buffer->device_ptr == NULL,
+              "Cannot set a device_ptr to a buffer that already has one");
+  iree_slim_mutex_lock(&buffer->device_ptr_lock);
+  buffer->device_ptr = pointer;
+  iree_slim_mutex_unlock(&buffer->device_ptr_lock);
+  iree_notification_post(&buffer->device_ptr_notification, IREE_ALL_WAITERS);
+}
+
+void iree_hal_hip_buffer_set_allocation_empty(iree_hal_buffer_t* base_buffer) {
+  iree_hal_hip_buffer_t* buffer = iree_hal_hip_buffer_cast(base_buffer);
+  iree_slim_mutex_lock(&buffer->device_ptr_lock);
+  buffer->empty = true;
+  buffer->device_ptr = NULL;
+  iree_slim_mutex_unlock(&buffer->device_ptr_lock);
+  iree_notification_post(&buffer->device_ptr_notification, IREE_ALL_WAITERS);
+}
+
 static void iree_hal_hip_buffer_destroy(iree_hal_buffer_t* base_buffer) {
   iree_hal_hip_buffer_t* buffer = iree_hal_hip_buffer_cast(base_buffer);
-  iree_allocator_t host_allocator = base_buffer->host_allocator;
+  iree_allocator_t host_allocator = buffer->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
   if (buffer->release_callback.fn) {
     buffer->release_callback.fn(buffer->release_callback.user_data,
                                 base_buffer);
   }
+  iree_slim_mutex_deinitialize(&buffer->device_ptr_lock);
+  iree_notification_deinitialize(&buffer->device_ptr_notification);
   iree_allocator_free(host_allocator, buffer);
   IREE_TRACE_ZONE_END(z0);
 }
@@ -143,10 +175,20 @@ iree_hal_hip_buffer_type_t iree_hal_hip_buffer_type(
   return buffer->type;
 }
 
+static bool iree_hal_hip_buffer_has_device_ptr(void* arg) {
+  iree_hal_hip_buffer_t* buffer = (iree_hal_hip_buffer_t*)arg;
+  iree_slim_mutex_lock(&buffer->device_ptr_lock);
+  bool has_ptr_or_error = buffer->device_ptr || buffer->empty;
+  iree_slim_mutex_unlock(&buffer->device_ptr_lock);
+  return has_ptr_or_error;
+}
+
 hipDeviceptr_t iree_hal_hip_buffer_device_pointer(
-    const iree_hal_buffer_t* base_buffer) {
-  const iree_hal_hip_buffer_t* buffer =
-      iree_hal_hip_buffer_const_cast(base_buffer);
+    iree_hal_buffer_t* base_buffer) {
+  iree_hal_hip_buffer_t* buffer = iree_hal_hip_buffer_cast(base_buffer);
+  iree_notification_await(&buffer->device_ptr_notification,
+                          iree_hal_hip_buffer_has_device_ptr, buffer,
+                          iree_infinite_timeout());
   return buffer->device_ptr;
 }
 

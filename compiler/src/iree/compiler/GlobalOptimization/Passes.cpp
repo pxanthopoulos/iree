@@ -29,12 +29,11 @@ static llvm::cl::opt<bool> clEnableFuseSiluHorizontalMatmul(
     llvm::cl::desc(
         "Enables fusing specifically structured matmuls (experimental)."),
     llvm::cl::init(false));
-// TODO(#15973): Make default to true after fixing the CPU DT regression.
 static llvm::cl::opt<bool> clEnableTransposePropagation(
     "iree-global-opt-propagate-transposes",
     llvm::cl::desc(
         "Enables propagation of transpose ops to improve fusion chances."),
-    llvm::cl::init(false));
+    llvm::cl::init(true));
 
 // TODO(hanchung): Remove the flag. We don't want to do early materialization by
 // default. Because it won't work for heterogeneous computing. This is not the
@@ -95,6 +94,8 @@ void buildGlobalOptimizationPassPipeline(
 
   // Preprocessing passes to get the program into a canonical state.
   FunctionLikeNest(mainPassManager)
+      .addPredicatedPass(transformOptions.options.stripAssertions,
+                         IREE::Util::createStripDebugOpsPass)
       .addPass(IREE::Util::createOptimizeIntArithmeticPass)
       .addPass(createLinalgQuantizedConvToConvPass)
       .addPass(createLinalgQuantizedMatmulToMatmulPass)
@@ -129,7 +130,11 @@ void buildGlobalOptimizationPassPipeline(
       // dims as the unit dim folding pass updates indexing maps and is better
       // at working with generics. By this point we have already done any
       // specialized raising and the op names are no longer useful.
-      .addPass(createGeneralizeLinalgNamedOpsPass);
+      .addPass([&]() {
+        GeneralizeLinalgNamedOpsPassOptions opt;
+        opt.enableGeneralizeMatmul = transformOptions.options.generalizeMatmul;
+        return createGeneralizeLinalgNamedOpsPass(opt);
+      });
 
   mainPassManager.addPass(DispatchCreation::createFoldUnitExtentDimsPass());
   FunctionLikeNest(mainPassManager)
@@ -217,16 +222,10 @@ void buildGlobalOptimizationPassPipeline(
 
   FunctionLikeNest(mainPassManager)
       .addPass(IREE::Flow::createCanonicalizerPass)
-      .addPass(mlir::createCSEPass);
-
-  FunctionLikeNest(mainPassManager)
+      .addPass(mlir::createCSEPass)
       // After running const-eval to a fixed point and folding unit extent dims,
       // try any new raising opportunities.
-      .addPass(createRaiseSpecialOpsPass)
-      // Strip std.assert & co after we perform optimizations; prior to this we
-      // may use the assertions to derive information during analysis.
-      .addPredicatedPass(transformOptions.options.stripAssertions,
-                         IREE::Util::createStripDebugOpsPass);
+      .addPass(createRaiseSpecialOpsPass);
 
   // Export after const-eval. If the user wants to keep the input constants
   // as is in the final parameter archive, they will probably want to disable

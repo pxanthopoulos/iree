@@ -57,8 +57,9 @@ iree_status_t iree_hal_hip_stream_command_buffer_create(
     iree_hal_stream_tracing_context_t* tracing_context,
     iree_hal_command_buffer_mode_t mode,
     iree_hal_command_category_t command_categories,
-    iree_host_size_t binding_capacity, hipStream_t stream,
-    iree_arena_block_pool_t* block_pool, iree_allocator_t host_allocator,
+    iree_hal_queue_affinity_t queue_affinity, iree_host_size_t binding_capacity,
+    hipStream_t stream, iree_arena_block_pool_t* block_pool,
+    iree_allocator_t host_allocator,
     iree_hal_command_buffer_t** out_command_buffer) {
   IREE_ASSERT_ARGUMENT(device_allocator);
   IREE_ASSERT_ARGUMENT(hip_symbols);
@@ -84,7 +85,7 @@ iree_status_t iree_hal_hip_stream_command_buffer_create(
                             (void**)&command_buffer));
 
   iree_hal_command_buffer_initialize(
-      device_allocator, mode, command_categories, IREE_HAL_QUEUE_AFFINITY_ANY,
+      device_allocator, mode, command_categories, queue_affinity,
       binding_capacity, (uint8_t*)command_buffer + sizeof(*command_buffer),
       &iree_hal_hip_stream_command_buffer_vtable, &command_buffer->base);
   command_buffer->host_allocator = host_allocator;
@@ -227,7 +228,6 @@ static iree_status_t iree_hal_hip_stream_command_buffer_begin_debug_group(
       location ? location->file.data : NULL, location ? location->file.size : 0,
       location ? location->line : 0,
       /*func_name=*/NULL, 0, label.data, label.size);
-
   return iree_ok_status();
 }
 
@@ -240,7 +240,6 @@ static iree_status_t iree_hal_hip_stream_command_buffer_end_debug_group(
   IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
                                  &command_buffer->tracing_event_list,
                                  IREE_HAL_STREAM_TRACING_VERBOSITY_COARSE);
-
   return iree_ok_status();
 }
 
@@ -329,6 +328,9 @@ static iree_status_t iree_hal_hip_stream_command_buffer_fill_buffer(
       iree_hal_buffer_byte_offset(target_ref.buffer) + target_ref.offset;
   hipDeviceptr_t dst = (uint8_t*)target_device_buffer + target_offset;
   size_t num_elements = target_ref.length / pattern_length;
+  IREE_HAL_STREAM_TRACE_ZONE_BEGIN(command_buffer->tracing_context,
+                                   &command_buffer->tracing_event_list,
+                                   IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
 
   switch (pattern_length) {
     case 4: {
@@ -360,7 +362,9 @@ static iree_status_t iree_hal_hip_stream_command_buffer_fill_buffer(
       return iree_make_status(IREE_STATUS_INTERNAL,
                               "unsupported fill pattern length");
   }
-
+  IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
+                                 &command_buffer->tracing_event_list,
+                                 IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
@@ -398,12 +402,17 @@ static iree_status_t iree_hal_hip_stream_command_buffer_update_buffer(
   hipDeviceptr_t dst = (uint8_t*)target_device_buffer +
                        iree_hal_buffer_byte_offset(target_ref.buffer) +
                        target_ref.offset;
+  IREE_HAL_STREAM_TRACE_ZONE_BEGIN(command_buffer->tracing_context,
+                                   &command_buffer->tracing_event_list,
+                                   IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
   IREE_HIP_RETURN_AND_END_ZONE_IF_ERROR(
       z0, command_buffer->hip_symbols,
       hipMemcpyHtoDAsync(dst, (void*)src, target_ref.length,
                          command_buffer->hip_stream),
       "hipMemcpyHtoDAsync");
-
+  IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
+                                 &command_buffer->tracing_event_list,
+                                 IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
@@ -418,6 +427,9 @@ static iree_status_t iree_hal_hip_stream_command_buffer_copy_buffer(
 
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_hip_stream_command_buffer_flush_collectives(command_buffer));
+  IREE_HAL_STREAM_TRACE_ZONE_BEGIN(command_buffer->tracing_context,
+                                   &command_buffer->tracing_event_list,
+                                   IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
 
   hipDeviceptr_t target_device_buffer = iree_hal_hip_buffer_device_pointer(
       iree_hal_buffer_allocated_buffer(target_ref.buffer));
@@ -435,6 +447,10 @@ static iree_status_t iree_hal_hip_stream_command_buffer_copy_buffer(
       hipMemcpyAsync(dst, src, target_ref.length, hipMemcpyDeviceToDevice,
                      command_buffer->hip_stream),
       "hipMemcpyAsync");
+
+  IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
+                                 &command_buffer->tracing_event_list,
+                                 IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -492,7 +508,8 @@ static iree_status_t iree_hal_hip_stream_command_buffer_dispatch(
   const iree_hal_hip_kernel_params_t* kernel_params = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_hip_native_executable_lookup_kernel_params(
-              executable, entry_point, &kernel_params));
+              executable, entry_point, command_buffer->base.queue_affinity,
+              &kernel_params));
 
   IREE_HAL_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
       command_buffer->tracing_context, &command_buffer->tracing_event_list,
@@ -528,7 +545,7 @@ static iree_status_t iree_hal_hip_stream_command_buffer_dispatch(
   void** params_ptr = (void**)storage_base;
   hipDeviceptr_t* payload_ptr =
       (hipDeviceptr_t*)((uint8_t*)params_ptr + kernel_params_length);
-  for (size_t i = 0; i < kernel_params_count; i++) {
+  for (iree_host_size_t i = 0; i < kernel_params_count; i++) {
     params_ptr[i] = &payload_ptr[i];
   }
   for (iree_host_size_t i = 0; i < bindings.count; i++) {
@@ -555,7 +572,7 @@ static iree_status_t iree_hal_hip_stream_command_buffer_dispatch(
         ((const uint32_t*)constants.data)[i];
   }
 
-  iree_status_t status = IREE_HIP_RESULT_TO_STATUS(
+  iree_status_t status = IREE_HIP_CALL_TO_STATUS(
       command_buffer->hip_symbols,
       hipModuleLaunchKernel(
           kernel_params->function, workgroup_count[0], workgroup_count[1],
@@ -580,6 +597,14 @@ static iree_status_t iree_hal_hip_stream_command_buffer_dispatch_indirect(
     iree_hal_buffer_ref_list_t bindings, iree_hal_dispatch_flags_t flags) {
   return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                           "indirect dispatch not yet implemented");
+}
+
+iree_hal_stream_tracing_context_event_list_t
+iree_hal_hip_stream_command_buffer_tracing_events(
+    iree_hal_command_buffer_t* base_command_buffer) {
+  iree_hal_hip_stream_command_buffer_t* command_buffer =
+      iree_hal_hip_stream_command_buffer_cast(base_command_buffer);
+  return command_buffer->tracing_event_list;
 }
 
 static const iree_hal_command_buffer_vtable_t

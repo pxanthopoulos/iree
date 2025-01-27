@@ -54,6 +54,7 @@ struct WgpDetails {
 // Chip level feature/limit details
 struct ChipDetails {
   uint32_t wgpCount;
+  std::optional<StringRef> sku;
 };
 
 // Full target details
@@ -116,9 +117,13 @@ TargetAttr createTargetAttr(const TargetDetails &details, StringRef arch,
       DictionaryAttr{});
 
   TargetChipAttr targetChip;
-  if (details.chip)
-    targetChip =
-        TargetChipAttr::get(context, details.chip->wgpCount, DictionaryAttr{});
+  if (details.chip) {
+    auto skuAttr = details.chip->sku
+                       ? StringAttr::get(context, *details.chip->sku)
+                       : StringAttr{};
+    targetChip = TargetChipAttr::get(context, details.chip->wgpCount, skuAttr,
+                                     DictionaryAttr{});
+  }
 
   return TargetAttr::get(context, arch, features, targetWgp, targetChip);
 }
@@ -133,13 +138,23 @@ TargetAttr createTargetAttr(const TargetDetails &details, StringRef arch,
 
 const WgpDetails *getCDNA3WgpDetails() {
   static const MMAIntrinsic cdna3MMAOps[] = {
+      // Introduced in CDNA1, still present in CDNA3
       MMAIntrinsic::MFMA_F32_16x16x4_F32,
       MMAIntrinsic::MFMA_F32_16x16x16_F16,
       MMAIntrinsic::MFMA_F32_32x32x8_F16,
+      // Introduced in CDNA2, still present in CDNA3
+      MMAIntrinsic::MFMA_F64_16x16x4_F64,
+      // Introduced in CDNA3
       MMAIntrinsic::MFMA_F32_16x16x16_BF16,
       MMAIntrinsic::MFMA_F32_32x32x8_BF16,
-      MMAIntrinsic::MFMA_F32_16x16x32_F8E4M3FNUZ,
       MMAIntrinsic::MFMA_F32_16x16x32_F8E5M2FNUZ,
+      MMAIntrinsic::MFMA_F32_16x16x32_F8E5M2FNUZ_F8E4M3FNUZ,
+      MMAIntrinsic::MFMA_F32_16x16x32_F8E4M3FNUZ,
+      MMAIntrinsic::MFMA_F32_16x16x32_F8E4M3FNUZ_F8E5M2FNUZ,
+      MMAIntrinsic::MFMA_F32_32x32x16_F8E5M2FNUZ,
+      MMAIntrinsic::MFMA_F32_32x32x16_F8E5M2FNUZ_F8E4M3FNUZ,
+      MMAIntrinsic::MFMA_F32_32x32x16_F8E4M3FNUZ,
+      MMAIntrinsic::MFMA_F32_32x32x16_F8E4M3FNUZ_F8E5M2FNUZ,
       MMAIntrinsic::MFMA_I32_16x16x32_I8,
       MMAIntrinsic::MFMA_I32_32x32x16_I8,
   };
@@ -162,10 +177,16 @@ const WgpDetails *getCDNA3WgpDetails() {
 
 const WgpDetails *getCDNA2WgpDetails() {
   static const MMAIntrinsic cdna2MMAOps[] = {
+      // Introduced in CDNA1
+      MMAIntrinsic::MFMA_F32_16x16x4_F32,
       MMAIntrinsic::MFMA_F32_16x16x16_F16,
       MMAIntrinsic::MFMA_F32_32x32x8_F16,
       MMAIntrinsic::MFMA_I32_16x16x16_I8,
       MMAIntrinsic::MFMA_I32_32x32x8_I8,
+      // Introduced in CDNA2
+      MMAIntrinsic::MFMA_F32_16x16x8_BF16,
+      MMAIntrinsic::MFMA_F32_32x32x4_BF16,
+      MMAIntrinsic::MFMA_F64_16x16x4_F64,
   };
   static const WgpDetails cdna2Wgp = {allComputeBits,
                                       allStorageBits,
@@ -177,14 +198,18 @@ const WgpDetails *getCDNA2WgpDetails() {
                                       {1024, 1024, 1024},
                                       1024,
                                       64 * 1024,
-                                      {0x7fffffff, 0x7fffffff, 0x7fffffff}};
+                                      {0x7fffffff, 0x7fffffff, 0x7fffffff},
+                                      /*maxLoadInstructionBits=*/128,
+                                      /*simdsPerWgp=*/4,
+                                      /*vgprSpaceBits=*/256 * 32};
   return &cdna2Wgp;
 }
 
 const WgpDetails *getCDNA1WgpDetails() {
   static const MMAIntrinsic cdna1MMAOps[] = {
-      MMAIntrinsic::MFMA_F32_16x16x16_F16,
-      MMAIntrinsic::MFMA_F32_32x32x8_F16,
+      MMAIntrinsic::MFMA_F32_16x16x4_F32, MMAIntrinsic::MFMA_F32_16x16x16_F16,
+      MMAIntrinsic::MFMA_F32_32x32x8_F16, MMAIntrinsic::MFMA_I32_16x16x16_I8,
+      MMAIntrinsic::MFMA_I32_32x32x8_I8,
   };
   static const WgpDetails cdna1Wgp = {allComputeBits,
                                       allStorageBits,
@@ -196,15 +221,19 @@ const WgpDetails *getCDNA1WgpDetails() {
                                       {1024, 1024, 1024},
                                       1024,
                                       64 * 1024,
-                                      {0x7fffffff, 0x7fffffff, 0x7fffffff}};
+                                      {0x7fffffff, 0x7fffffff, 0x7fffffff},
+                                      /*maxLoadInstructionBits=*/128,
+                                      /*simdsPerWgp=*/4,
+                                      /*vgprSpaceBits=*/256 * 32};
   return &cdna1Wgp;
 }
 
 const WgpDetails *getRDNA3WgpDetails() {
   static const MMAIntrinsic rdna3MMAOps[] = {
-      MMAIntrinsic::WMMA_F32_16x16x16_F16,
-      MMAIntrinsic::WMMA_F16_16x16x16_F16,
+      MMAIntrinsic::WMMA_F32_16x16x16_F16, MMAIntrinsic::WMMA_F16_16x16x16_F16,
+      MMAIntrinsic::WMMA_I32_16x16x16_I8,  MMAIntrinsic::WMMA_I32_16x16x16_I8,
       MMAIntrinsic::WMMA_I32_16x16x16_I8,
+
   };
   static const WgpDetails rdna3Wgp = {allComputeBits,
                                       allStorageBits,
@@ -255,30 +284,35 @@ std::optional<TargetDetails> getAMDGPUTargetDetails(StringRef target) {
 
   // "AMD Instinct MI300 Series Product Offerings" in Page 23 of
   // https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf
-  static const ChipDetails mi300xChip = {304};
-  static const ChipDetails mi300aChip = {228};
+  static const ChipDetails mi300xChip = {304, "mi300x"};
+  static const ChipDetails mi300aChip = {228, "mi300a"};
+  static const ChipDetails mi308xChip = {80, "mi308x"};
 
   // "AMD Instinct MI200 Series Accelerator Product Offerings" in Page 14 of
   // https://www.amd.com/content/dam/amd/en/documents/instinct-business-docs/white-papers/amd-cdna2-white-paper.pdf
-  static const ChipDetails mi250xChip = {220};
-  static const ChipDetails mi250Chip = {208};
-  static const ChipDetails mi210Chip = {104};
+  static const ChipDetails mi250xChip = {220, "mi250x"};
+  static const ChipDetails mi250Chip = {208, "mi250"};
+  static const ChipDetails mi210Chip = {104, "mi210"};
 
   // "AMD CDNA Architecture Compute Units" in Page 5 of
   // https://www.amd.com/content/dam/amd/en/documents/instinct-business-docs/white-papers/amd-cdna-white-paper.pdf
-  static const ChipDetails mi100Chip = {120};
+  static const ChipDetails mi100Chip = {120, "mi100"};
 
-  static const ChipDetails rx7900xtxChip = {96};
-  static const ChipDetails rx7900xtChip = {84};
-  static const ChipDetails rx7800xtChip = {60};
-  static const ChipDetails rx7700xtChip = {54};
+  static const ChipDetails rx7900xtxChip = {96, "rx7900xtx"};
+  static const ChipDetails rx7900xtChip = {84, "rx7900xt"};
+  static const ChipDetails rx7800xtChip = {60, "rx7800xt"};
+  static const ChipDetails rx7700xtChip = {54, "rx7700xt"};
+  static const ChipDetails v710Chip = {54, "v710"};
+  static const ChipDetails w7900Chip = {96, "w7900"};
+  static const ChipDetails w7800Chip = {70, "w7800"};
+  static const ChipDetails w7700Chip = {48, "w7700"};
 
   // See https://llvm.org/docs/AMDGPUUsage.html#processors for gfxN to
   // cdnaN/rdnaN mapping.
-
   return llvm::StringSwitch<std::optional<TargetDetails>>(target.lower())
       .Case("mi300x", TargetDetails{cdna3Wgp, &mi300xChip})
       .Case("mi300a", TargetDetails{cdna3Wgp, &mi300aChip})
+      .Case("mi308x", TargetDetails{cdna3Wgp, &mi308xChip})
       .Cases("cdna3", "gfx940", "gfx941", "gfx942",
              TargetDetails{cdna3Wgp, nullptr})
       .Case("mi250x", TargetDetails{cdna2Wgp, &mi250xChip})
@@ -295,6 +329,14 @@ std::optional<TargetDetails> getAMDGPUTargetDetails(StringRef target) {
       .Case("rx7800xt", TargetDetails{rdna3Wgp, &rx7800xtChip})
       // https://www.techpowerup.com/gpu-specs/radeon-rx-7700-xt.c3911
       .Case("rx7700xt", TargetDetails{rdna3Wgp, &rx7700xtChip})
+      // https://www.techpowerup.com/gpu-specs/radeon-pro-v710.c4234
+      .Case("v710", TargetDetails{rdna3Wgp, &v710Chip})
+      // https://www.techpowerup.com/gpu-specs/radeon-pro-w7900.c4147
+      .Case("w7900", TargetDetails{rdna3Wgp, &w7900Chip})
+      // https://www.techpowerup.com/gpu-specs/radeon-pro-w7800.c4148
+      .Case("w7800", TargetDetails{rdna3Wgp, &w7800Chip})
+      // https://www.techpowerup.com/gpu-specs/radeon-pro-w7700.c4184
+      .Case("w7700", TargetDetails{rdna3Wgp, &w7700Chip})
       .Cases("rdna3", "gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1150",
              "gfx1151", TargetDetails{rdna3Wgp, nullptr})
       .Cases("rdna2", "gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034",
@@ -314,11 +356,11 @@ StringRef normalizeAMDGPUTarget(StringRef target) {
     return target;
 
   return llvm::StringSwitch<StringRef>(target.lower())
-      .Cases("mi300x", "mi300a", "gfx942")
+      .Cases("mi300a", "mi300x", "mi308x", "gfx942")
       .Cases("mi250x", "mi250", "mi210", "cdna2", "gfx90a")
       .Cases("mi100", "cdna1", "gfx908")
-      .Cases("rx7900xtx", "rx7900xt", "gfx1100")
-      .Cases("rx7800xt", "rx7700xt", "gfx1101")
+      .Cases("rx7900xtx", "rx7900xt", "w7900", "w7800", "gfx1100")
+      .Cases("rx7800xt", "rx7700xt", "v710", "w7700", "gfx1101")
       .Default("");
 }
 

@@ -17,7 +17,7 @@
 #config = #iree_codegen.lowering_config<tile_sizes = [[32, 32, 32], [16, 16, 16], [0, 0, 32]]>
 #map = affine_map<()[s0] -> (s0 * 32)>
 #map1 = affine_map<(d0, d1) -> (d0, d1)>
-#translation = #iree_codegen.translation_info<SPIRVCooperativeMatrixVectorize workgroup_size = [64, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVCooperativeMatrixVectorize workgroup_size = [64, 2, 1]>
 func.func @matmul_f16_32x32x32() attributes {translation_info = #translation} {
   %c32 = arith.constant 32 : index
   %c0 = arith.constant 0 : index
@@ -78,7 +78,7 @@ func.func @matmul_f16_32x32x32() attributes {translation_info = #translation} {
 #map2 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
 #map3 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
 #map4 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-#translation = #iree_codegen.translation_info<SPIRVMatmulPromoteVectorize workgroup_size = [64, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVMatmulPromoteVectorize workgroup_size = [64, 2, 1]>
 func.func @generic_batch_matmul_f16_32x128x512x64() attributes {translation_info = #translation} {
   %c32 = arith.constant 32 : index
   %c128 = arith.constant 128 : index
@@ -190,7 +190,7 @@ func.func @generic_batch_matmul_f16_32x128x512x64() attributes {translation_info
 #map2 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
 #map3 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
 #map4 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-#translation = #iree_codegen.translation_info<SPIRVMatmulPromoteVectorize workgroup_size = [64, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVMatmulPromoteVectorize workgroup_size = [64, 2, 1]>
 func.func @generic_batch_matmul_f16_32x128x512x64() attributes {translation_info = #translation} {
   %c32 = arith.constant 32 : index
   %c128 = arith.constant 128 : index
@@ -271,7 +271,7 @@ func.func @generic_batch_matmul_f16_32x128x512x64() attributes {translation_info
 #map1 = affine_map<(d0, d1, d2, d3) -> (d1, d0, d3)>
 #map2 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
 #map3 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
-#translation = #iree_codegen.translation_info<SPIRVMatmulPromoteVectorize workgroup_size = [64, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVMatmulPromoteVectorize workgroup_size = [64, 2, 1]>
 func.func @generic_batch_matmul_f16_32x128x512x64() attributes {translation_info = #translation} {
   %c32 = arith.constant 32 : index
   %c128 = arith.constant 128 : index
@@ -353,7 +353,7 @@ func.func @generic_batch_matmul_f16_32x128x512x64() attributes {translation_info
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 128)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-#translation = #iree_codegen.translation_info<SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
 func.func @batch_matmul_f16_1x64x128x512() attributes {translation_info = #translation} {
   %c4096 = arith.constant 4096 : index
   %c0 = arith.constant 0 : index
@@ -430,7 +430,7 @@ func.func @batch_matmul_f16_1x64x128x512() attributes {translation_info = #trans
 #map1 = affine_map<()[s0] -> (s0 * 128)>
 #map2 = affine_map<(d0, d1) -> (d1)>
 #map3 = affine_map<(d0, d1) -> (d0, d1)>
-#translation = #iree_codegen.translation_info<SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
 func.func @matmul_f16_f512x4096x64() attributes {translation_info = #translation} {
   %c512 = arith.constant 512 : index
   %c4096 = arith.constant 4096 : index
@@ -519,7 +519,7 @@ func.func @matmul_f16_f512x4096x64() attributes {translation_info = #translation
 #map1 = affine_map<()[s0] -> (s0 * 128)>
 #map2 = affine_map<(d0, d1) -> (d0)>
 #map3 = affine_map<(d0, d1) -> (d0, d1)>
-#translation = #iree_codegen.translation_info<SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
 func.func @matmul_f16_f512x4096x64() attributes {translation_info = #translation} {
   %c512 = arith.constant 512 : index
   %c4096 = arith.constant 4096 : index
@@ -607,7 +607,7 @@ func.func @matmul_f16_f512x4096x64() attributes {translation_info = #translation
 #map1 = affine_map<()[s0] -> (s0 * 128)>
 #map2 = affine_map<(d0, d1) -> (d0)>
 #map3 = affine_map<(d0, d1) -> (d0, d1)>
-#translation = #iree_codegen.translation_info<SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
+#translation = #iree_codegen.translation_info<pipeline = SPIRVCooperativeMatrixVectorize workgroup_size = [128, 2, 1]>
 func.func @matmul_f16_128x262144x2304() attributes {translation_info = #translation} {
   %c128 = arith.constant 128 : index
   %c262144 = arith.constant 262144 : index
@@ -616,7 +616,7 @@ func.func @matmul_f16_128x262144x2304() attributes {translation_info = #translat
   %c134217728 = arith.constant 134217728 : index
   %cst = arith.constant 0.000000e+00 : f16
   %cst_0 = arith.constant dense<"0x69222B2E40A3002A45AC1AAB2E2E202DA21C212680264C2A102314A041A7D029CB28352E5BAAD3B02F299D9A142B8AA1D1285C28412B25AF9A24EE2BA22C242D53AD9E2948A9289FCF301D28012F08AD68A6DD20ECAC912465290B2E9420C5AA50A222A912AB9526B62ADA2039AD4D912C9FDD287B20B224D329BA2A4D2C41A76DAB7E30B027F62ED1A0F1273A2BAE9D0FA48029812992A65AA92A2C9C2EE9A744A4632C5FA8A9A4CF2D70A482A0F5A2DBA7B6304B9D22A52B1B9DA8E424722AB5ACD0248A2B8B29C82D782E402D1A99F0A60CA4DE2DD32815266F2A6B247FA6FE214E2853AA402390AB6925F1A339307F2664A23CACBE28BA2B3D286DB0BA2E"> : tensor<128xf16>
-  %0 = bufferization.to_memref %cst_0 : memref<128xf16>
+  %0 = bufferization.to_memref %cst_0 : tensor<128xf16> to memref<128xf16>
   %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c96565312) : memref<128x2304xf16>
   %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c806357120) : memref<2304x262144xf16>
   %3 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) alignment(64) offset(%c134217728) : memref<128x262144xf16>

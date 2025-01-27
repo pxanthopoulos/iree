@@ -25,6 +25,7 @@ class MatrixElemTypeId(enum.Enum):
     NONE = ""
     I8 = "i8"
     I32 = "i32"
+    F64 = "f64"
     F32 = "f32"
     F16 = "f16"
     BF16 = "bf16"
@@ -49,7 +50,6 @@ class ShapesId(enum.Enum):
 @enum.unique
 class CompilationInfoId(enum.Enum):
     NONE = ""
-    LLVMGPUMatmulSimt = "LLVMGPUMatmulSimt"
     LLVMGPUMatmulTensorCore = "LLVMGPUMatmulTensorCore"
     LLVMGPUMatmulTensorCoreMmaSync = "LLVMGPUMatmulTensorCoreMmaSync"
     LLVMGPUVectorDistributeMFMA = "LLVMGPUVectorDistributeMFMA"
@@ -147,7 +147,7 @@ class IREEGPUCompilationInfo(CompilationInfo):
             f"  subgroup_n_count = {self.mma_schedule.n_count}, "
             f"  workgroup = {self.workgroup_tile}, "
             f"  reduction = {self.reduction_tile} }}>,\n"
-            f"  translation_info = <{compiler_pipeline} {self.workgroup_size_str()}\n"
+            f"  translation_info = #iree_codegen.translation_info<pipeline = {compiler_pipeline} {self.workgroup_size_str()}\n"
             f"  {subgroup_size_str}>>\n"
         )
 
@@ -177,7 +177,7 @@ class LegacyCompilationInfo(CompilationInfo):
         return (
             "#iree_codegen.compilation_info<\n"
             f"  lowering_config = #iree_codegen.lowering_config<tile_sizes = {self.tile_sizes}>,\n"
-            f"  translation_info = <{compiler_pipeline} {self.workgroup_size_str()}\n"
+            f"  translation_info = #iree_codegen.translation_info<pipeline = {compiler_pipeline} {self.workgroup_size_str()}\n"
             f"  {subgroup_size_str},\n"
             f"  {{ pipeline_depth = {self.software_pipeline_depth}, store_stage = 1}}>>"
         )
@@ -338,6 +338,10 @@ def get_rocm_test_compilation_infos(
             MMASchedule("MFMA_F32_16x16x32_F8E4M3FNUZ", 2, 2, 1, 1, 2),
             MMASchedule("MFMA_F32_16x16x32_F8E4M3FNUZ", 4, 1, 4, 1, 1),
             MMASchedule("MFMA_F32_16x16x32_F8E4M3FNUZ", 4, 2, 4, 2, 1),
+            MMASchedule("MFMA_F32_32x32x16_F8E4M3FNUZ", 1, 1, 1, 1, 1),
+            MMASchedule("MFMA_F32_32x32x16_F8E4M3FNUZ", 2, 2, 1, 1, 2),
+            MMASchedule("MFMA_F32_32x32x16_F8E4M3FNUZ", 4, 1, 1, 2, 2),
+            MMASchedule("MFMA_F32_32x32x16_F8E4M3FNUZ", 4, 2, 2, 2, 2),
             MMASchedule("MFMA_I32_16x16x32_I8", 1, 1, 1, 1, 1),
             MMASchedule("MFMA_I32_16x16x32_I8", 2, 2, 1, 1, 2),
             MMASchedule("MFMA_I32_16x16x32_I8", 4, 1, 4, 1, 1),
@@ -408,6 +412,7 @@ def get_rocm_test_compilation_infos(
             wg_tile_k = schedule.k_tile_count * 32
         elif (
             schedule.intrinsic == "VMFMA_F32_32x32x16_F16"
+            or schedule.intrinsic == "MFMA_F32_32x32x16_F8E4M3FNUZ"
             or schedule.intrinsic == "MFMA_I32_32x32x16_I8"
         ):
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 32
@@ -455,18 +460,7 @@ def get_test_compilation_infos(
 
     software_pipeline_depth = 0
     tile_workgroup_size_pairs = []
-    if compilation_info_id == CompilationInfoId.LLVMGPUMatmulSimt:
-        tile_workgroup_size_pairs = [
-            TileWorkgroupSizePair([[32, 128, 32]], [32, 8, 1]),
-            TileWorkgroupSizePair([[128, 64, 8]], [16, 8, 1]),
-            TileWorkgroupSizePair([[16, 256, 32]], [64, 2, 1]),
-            TileWorkgroupSizePair([[8, 32, 32]], [8, 8, 1]),
-            TileWorkgroupSizePair([[8, 128, 4]], [32, 1, 1]),
-            TileWorkgroupSizePair([[16, 64, 4]], [16, 2, 1]),
-            TileWorkgroupSizePair([[1, 128, 8]], [32, 1, 1]),
-        ]
-        software_pipeline_depth = 3
-    elif compilation_info_id == CompilationInfoId.SPIRVCooperativeMatrixVectorize:
+    if compilation_info_id == CompilationInfoId.SPIRVCooperativeMatrixVectorize:
         tile_workgroup_size_pairs = [
             TileWorkgroupSizePair(
                 [[64, 128], [32, 64], [0, 0, 32], [16, 16, 16]], [64, 2, 1]
@@ -896,6 +890,7 @@ def parse_arguments():
         choices=[
             "i32",
             "i8",
+            "f64",
             "f32",
             "f16",
             "bf16",
@@ -910,7 +905,7 @@ def parse_arguments():
     parser.add_argument(
         "--acc_type",
         type=str,
-        choices=["i32", "f32", "f16", "bf16"],
+        choices=["i32", "f64", "f32", "f16", "bf16"],
         help="Numeric type of the accumulator and result matrices",
         required=True,
     )

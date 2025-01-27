@@ -23,9 +23,6 @@ def BlockDynamicDimensionsPass
     : Pass<"iree-codegen-block-dynamic-dimensions"> {
   let summary = "Expand dynamic dimensions that are known to be multiples of "
                 "statically known values.";
-  let options = [
-    Option<"test", "test", "bool", /*default=*/"false", "Enable test mode">
-  ];
 }
 
 def BubbleUpOrdinalOpsPass : Pass<"iree-codegen-bubble-up-ordinal-ops", ""> {
@@ -47,6 +44,15 @@ def BufferizeCopyOnlyDispatchesPass :
   }];
 }
 
+def ConfigTrackingCanonicalizerPass :
+    Pass<"iree-codegen-config-tracking-canonicalize", ""> {
+  let summary = "Codegen specific canonicalization pass that tracks lowering configs";
+  let options = [
+    Option<"testConvergence", "test-convergence", "bool",
+           /*default=*/"false", "Fails if the patterns fail to converge">
+  ];
+}
+
 def CleanupBufferAllocViewPass :
     InterfacePass<"iree-codegen-cleanup-buffer-alloc-view", "mlir::FunctionOpInterface"> {
   let summary =
@@ -58,6 +64,11 @@ def ConcretizePadResultShapePass :
   let summary =
       "Concretizes tensor.pad op's result shape if its source op"
       "implements OffsetSizeAndStrideOpInterface.";
+}
+
+def ConvertAccGEMMToGEMMPass :
+    Pass<"iree-convert-accgemm-to-gemm", ""> {
+  let summary = "Convert accumulating GEMMs to GEMMs post dispatch creation.";
 }
 
 def ConvertBf16ArithToF32Pass : Pass<"iree-convert-bf16-arith-to-f32", ""> {
@@ -400,6 +411,21 @@ def InstrumentMemoryAccessesPass :
   let summary = "Instruments memory reads and writes for address tracking when dispatch instrumentation is enabled.";
 }
 
+def LinkTuningSpecsPass : Pass<"iree-codegen-link-tuning-specs", "ModuleOp"> {
+  let summary =
+      "Link nested transform dialect tuning specs named sequences into a single entry point";
+  let description = [{
+    Given a module with multiple nested tuning specs, introduce a new named sequence
+    that includes all the other tuning spec entry points. The order of inclusion is the same
+    as the order in which these nested tuning specs appear in the IR.
+
+    A tuning spec entry point is a `transform.named_sequence` op annotated with the
+    `iree_codegen.tuning_spec` unit attribute. We require it to perform in-place op
+    modification and not consume the handle.
+  }];
+  let dependentDialects = ["transform::TransformDialect"];
+}
+
 def LowerExecutableUsingTransformDialectPass :
     Pass<"iree-codegen-lower-executable-using-transform-dialect", "ModuleOp"> {
   let summary = "Lower executables using the transform dialect recipe provided in the module.";
@@ -410,9 +436,43 @@ def LowerUKernelOpsToCallsPass :
   let summary = "Lower micro-kernel wrapper ops into function calls";
 }
 
+def MaterializeHostEncodingPass :
+    Pass<"iree-codegen-materialize-host-encoding", "mlir::ModuleOp"> {
+  let summary = "Materialize the encoding for tensor as specified by the backend.";
+}
+
+def MaterializeDeviceEncodingPass :
+    InterfacePass<"iree-codegen-materialize-device-encoding", "mlir::FunctionOpInterface"> {
+  let summary = "Materialize the encoding for tensor as specified by the backend.";
+  let options = [
+    Option<"testCLGPUTarget", "test-cl-gpu-target", "bool", /*default=*/"false",
+           "Flag used for lit-testing GPU target only. Not for general usage">,
+  ];
+}
+
+// TODO(hanchung): Remove the pass after we deprecate MaterializeHomogeneousEncodingsPass.
 def MaterializeEncodingIntoNopPass :
     InterfacePass<"iree-codegen-materialize-encoding-into-nop", "mlir::FunctionOpInterface"> {
   let summary = "Drop the encodings from tensor types with encodings.";
+}
+
+def MaterializeTuningSpecsPass : Pass<"iree-codegen-materialize-tuning-specs", "ModuleOp"> {
+  let summary =
+      "Load tuning spec transform dialect libraries and encode them in the module";
+  let description = [{
+    Links all available tuning spec transform dialect modules into a single
+    tuning spec. Next, serializes this tuning spec to bytecode and attaches it
+    as a module attribute. We do this so that the full tuning spec is always
+    encoded in the program IR and can be checked with `--mlir-print-ir-after-all`
+    (or equivalent). The alternative would be to add the tuning spec as a
+    submodule in the compiled program, but this may result in the tuning spec
+    being inadvertently visited by other passes that attempt to `walk` the outer
+    module. Serialization makes the tuning specs opaque and prevents it from
+    happening.
+
+    This attribute is expected to be short-lived and removed by
+    `iree-codegen-materialize-user-configs`.
+  }];
 }
 
 def MaterializeUserConfigsPass : Pass<"iree-codegen-materialize-user-configs", "ModuleOp"> {
@@ -471,6 +531,12 @@ def PolynomialApproximationPass :
   let summary = "Convert math operations to their polynomial approximation";
 }
 
+def PropagateDispatchSizeBoundsPass :
+    InterfacePass<"iree-codegen-propagate-dispatch-size-bounds", "mlir::FunctionOpInterface"> {
+  let summary = "Pass to annotate workitem and workgroup IDs with known bounds";
+  let dependentDialects = ["::mlir::arith::ArithDialect"];
+}
+
 def PropagateReshapesByExpansionPass :
     Pass<"iree-codegen-propagate-reshapes-by-expansion", ""> {
   let summary = "Propagates reshaping operations by expansion.";
@@ -488,6 +554,11 @@ def RematerializeParallelOpsPass :
 def RemoveSingleIterationLoopPass :
     InterfacePass<"iree-codegen-remove-single-iteration-loop", "mlir::FunctionOpInterface"> {
   let summary = "Remove distributed loop with single iteration.";
+}
+
+def StripCompilationInfoPass :
+    Pass<"iree-codegen-strip-compilation-info", "">{
+   let summary = "Remove all the the lowering configuration and translation info attributes.";
 }
 
 // TODO: Replace with upstream: https://github.com/iree-org/iree/issues/18759
@@ -572,6 +643,11 @@ def TileAndDistributeToWorkgroupsUsingForallOpPass :
     "scf::SCFDialect",
     "tensor::TensorDialect",
   ];
+  let options = [
+    Option<"transposeWorkgroup", "transpose-workgroup", "bool", /*default=*/"false",
+           "Swaps the workgroup mapping attribute x and y."
+            "Only swaps when the loop bounds are static.">,
+  ];
 }
 
 def TileLargeTensorsPass :
@@ -620,6 +696,27 @@ def UnrollAnnotatedLoopsPass :
 def VectorizeMemrefCopyPass :
     Pass<"iree-codegen-vectorize-memref-copy", ""> {
   let summary = "Vectorizes memref copy operations.";
+}
+
+def VectorTransferLoweringPass :
+    InterfacePass<"iree-codegen-vector-transfer-lowering", "mlir::FunctionOpInterface"> {
+  let summary = "Pass to lower transfer ops to simpler ops like `vector.load`, `vector.store`, `vector.broadcast`, and a set of scf ops.";
+  let options = [
+    Option<"enableScalableLowerings", "enable-scalable-lowerings", "bool",
+      /*default=*/"false",
+      "Enables scalable vector specific transfer lowerings">,
+  ];
+}
+
+def VerifyWorkgroupDistributionPass :
+    InterfacePass<"iree-codegen-verify-workgroup-distribution", "mlir::FunctionOpInterface"> {
+  let summary = "Pass to verify proper distribution to workgroups.";
+  let description = [{
+    Pass to verify that all writes to global memory are explicitly mapped to
+    workgroups. This means that in cases where we use loops (scf.forall) to
+    manage distribution to workgroups, we require that all ops with write
+    side effects are contained within a workgroup distributed loop.
+  }];
 }
 
 #endif // IREE_CODEGEN_COMMON_PASSES

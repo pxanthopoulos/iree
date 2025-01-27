@@ -108,12 +108,28 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
+    IREECodegenDialectCAPI
+  SRCS
+    "IREECodegenDialectCAPI.cpp"
+  DEPS
+    IREELLVMIncludeSetup
+    MLIRCAPIIR
+    MLIRIR
+    iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
+    iree::compiler::Codegen::Utils
+    iree::compiler::bindings::c::headers
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
     IREEGPUDialectCAPI
   SRCS
     "IREEGPUDialectCAPI.cpp"
   DEPS
     IREELLVMIncludeSetup
     MLIRCAPIIR
+    MLIRIR
     iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
     iree::compiler::bindings::c::headers
   PUBLIC

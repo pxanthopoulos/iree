@@ -48,9 +48,8 @@ static int64_t prod(ArrayRef<int64_t> values) {
   return ShapedType::getNumElements(values);
 }
 
-static int64_t calculateSharedMemoryUsedInBytes(const GPUMMASchedule &schedule,
-                                                int64_t lhsBitwidth,
-                                                int64_t rhsBitwidth) {
+static int64_t calculateOperandsSharedMemoryUsedInBytes(
+    const GPUMMASchedule &schedule, int64_t lhsBitwidth, int64_t rhsBitwidth) {
 
   int64_t tileM = schedule.mSize * prod(schedule.mTileSizes) *
                   prod(schedule.mSubgroupCounts);
@@ -58,6 +57,17 @@ static int64_t calculateSharedMemoryUsedInBytes(const GPUMMASchedule &schedule,
                   prod(schedule.nSubgroupCounts);
   int64_t tileK = schedule.kSize * prod(schedule.kTileSizes);
   return (tileM * tileK * lhsBitwidth + tileN * tileK * rhsBitwidth) / 8;
+}
+
+static int64_t
+calculateResultSharedMemoryUsedInBytes(const GPUMMASchedule &schedule,
+                                       int64_t resultBitwidth) {
+
+  int64_t tileM = schedule.mSize * prod(schedule.mTileSizes) *
+                  prod(schedule.mSubgroupCounts);
+  int64_t tileN = schedule.nSize * prod(schedule.nTileSizes) *
+                  prod(schedule.nSubgroupCounts);
+  return (tileM * tileN * resultBitwidth) / 8;
 }
 
 /// Check that a GPUMMASchedule fits alignment restrictions. To be aligned,
@@ -236,14 +246,20 @@ static LogicalResult canTargetIntrinsic(const GPUMatmulShapeType &problem,
     return failure(); // Cannot use this intrinsic for misaligned cases.
   }
 
-  // Cannot use the intrinsic when the tile size is greater than problem size.
-  // Because tiling is a no-op, and we can't infer tiling sizes from IR.
-  if (!mustBeAligned && (problem.mSizes.back() < intrinsic.mSizes[0] ||
-                         problem.nSizes.back() < intrinsic.nSizes[0] ||
-                         problem.kSizes.back() < intrinsic.kSizes[0])) {
+  // TODO: Figure out what the precise cutoff is, this may be machine dependent.
+  // In situation when alignment isn't required, we disallow intrinsics to be
+  // picked if the tile size is too small. For example, this will force a matmul
+  // with a tiny dimension to not use MFMA instructions because of the
+  // additional overhead that comes with it. However, 4 is only an approximation
+  // to boundary between matvec and matmul. The actual heuristic can be
+  // established after we sweep the different tile sizes for a problem config.
+  // Once a precise threshold is established, replace 4 with the threshold and
+  // remove this todo.
+  if (!mustBeAligned &&
+      (problem.mSizes.back() < 4 || problem.nSizes.back() < 4 ||
+       problem.kSizes.back() < 4)) {
     return failure();
   }
-
   return success();
 }
 
@@ -377,7 +393,7 @@ FailureOr<GPUMMASchedule> deduceMMASchedule(
     const GPUMatmulShapeType &problem, ArrayRef<GPUMatmulShapeType> intrinsics,
     const GPUMMAHeuristicSeeds &seeds, int64_t sharedMemLimitInBytes,
     int64_t subgroupSize, bool transposedLhs, bool transposedRhs,
-    bool canUpcastAcc, bool mustBeAligned) {
+    bool canUpcastAcc, bool mustBeAligned, bool doCPromotion) {
   for (auto [index, intrinsic] : llvm::enumerate(intrinsics)) {
     if (failed(canTargetIntrinsic(problem, intrinsic, canUpcastAcc,
                                   mustBeAligned))) {
@@ -397,11 +413,17 @@ FailureOr<GPUMMASchedule> deduceMMASchedule(
           intrinsics[schedule.index].aType.getIntOrFloatBitWidth();
       int64_t rhsBitwidth =
           intrinsics[schedule.index].bType.getIntOrFloatBitWidth();
+      int64_t resultBitwidth =
+          intrinsics[schedule.index].cType.getIntOrFloatBitWidth();
       bool isAligned =
           isValidMMASchedule(problem, schedule, mustBeAligned, subgroupSize,
                              transposedLhs, transposedRhs);
-      int64_t sharedMemoryUsed =
-          calculateSharedMemoryUsedInBytes(schedule, lhsBitwidth, rhsBitwidth);
+      int64_t sharedMemoryUsed = calculateOperandsSharedMemoryUsedInBytes(
+          schedule, lhsBitwidth, rhsBitwidth);
+      if (doCPromotion) {
+        sharedMemoryUsed +=
+            calculateResultSharedMemoryUsedInBytes(schedule, resultBitwidth);
+      }
 
       LLVM_DEBUG({
         llvm::dbgs() << "Available Shared Memory: ";
@@ -475,10 +497,10 @@ FailureOr<GPUMMASchedule> deduceAttentionSchedule(
           intrinsics[schedule.index].aType.getIntOrFloatBitWidth();
       int64_t rhsBitwidth =
           intrinsics[schedule.index].bType.getIntOrFloatBitWidth();
-      int64_t sharedMemoryUsed =
-          calculateSharedMemoryUsedInBytes(qkSchedule, lhsBitwidth,
-                                           rhsBitwidth) +
-          calculateSharedMemoryUsedInBytes(schedule, lhsBitwidth, rhsBitwidth);
+      int64_t sharedMemoryUsed = calculateOperandsSharedMemoryUsedInBytes(
+                                     qkSchedule, lhsBitwidth, rhsBitwidth) +
+                                 calculateOperandsSharedMemoryUsedInBytes(
+                                     schedule, lhsBitwidth, rhsBitwidth);
 
       LLVM_DEBUG({
         llvm::dbgs() << "Available Shared Memory: ";

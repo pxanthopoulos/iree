@@ -61,13 +61,12 @@ graph LR
 
     === "Stable releases"
 
-        Stable release packages are
-        [published to PyPI](https://pypi.org/user/google-iree-pypi-deploy/).
+        Stable release packages are [published to PyPI](https://pypi.org/).
 
         ``` shell
         python -m pip install \
-          iree-compiler \
-          iree-runtime \
+          iree-base-compiler \
+          iree-base-runtime \
           iree-tools-tf
         ```
 
@@ -80,8 +79,9 @@ graph LR
         python -m pip install \
           --find-links https://iree.dev/pip-release-links.html \
           --upgrade \
-          iree-compiler \
-          iree-runtime \
+          --pre \
+          iree-base-compiler \
+          iree-base-runtime \
           iree-tools-tf
         ```
 

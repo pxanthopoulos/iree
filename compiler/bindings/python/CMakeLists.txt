@@ -103,6 +103,15 @@ declare_mlir_dialect_python_bindings(
 declare_mlir_dialect_python_bindings(
   ADD_TO_PARENT IREEPythonSources.Dialects
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/iree/compiler"
+  TD_FILE dialects/IREECodegenBinding.td
+  GEN_ENUM_BINDINGS
+  SOURCES dialects/iree_codegen.py
+  DIALECT_NAME iree_codegen
+)
+
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT IREEPythonSources.Dialects
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/iree/compiler"
   TD_FILE dialects/IREEGPUBinding.td
   GEN_ENUM_BINDINGS
   SOURCES dialects/iree_gpu.py
@@ -136,6 +145,7 @@ declare_mlir_python_sources(IREECompilerAPIPythonTools
     tools/tf.py
     tools/tflite.py
     tools/import_onnx/__main__.py
+    tools/import_onnx/importer_externalization_overrides.py
     tools/ir_tool/__main__.py
     tools/scripts/iree_compile/__main__.py
     tools/scripts/iree_opt/__main__.py
@@ -166,6 +176,7 @@ declare_mlir_python_sources(IREECompilerPythonExtensions)
 declare_mlir_python_extension(IREECompilerPythonExtensions.Registration
   MODULE_NAME _site_initialize_0
   ADD_TO_PARENT IREECompilerPythonExtensions
+  PYTHON_BINDINGS_LIBRARY nanobind
   SOURCES
     IREECompilerRegistration.cpp
   EMBED_CAPI_LINK_LIBS
@@ -177,6 +188,7 @@ declare_mlir_python_extension(IREECompilerPythonExtensions.Registration
 declare_mlir_python_extension(IREECompilerPythonExtensions.CompilerDialects
   MODULE_NAME _ireeCompilerDialects
   ADD_TO_PARENT IREECompilerPythonExtensions
+  PYTHON_BINDINGS_LIBRARY nanobind
   SOURCES
     IREECompilerDialectsModule.cpp
   EMBED_CAPI_LINK_LIBS
@@ -210,6 +222,7 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.math
   MLIRPythonSources.Dialects.memref
   MLIRPythonSources.Dialects.pdl
+  MLIRPythonSources.Dialects.rocdl
   MLIRPythonSources.Dialects.scf
   MLIRPythonSources.Dialects.shape
   MLIRPythonSources.Dialects.structured_transform
@@ -251,6 +264,7 @@ SOURCES
   __main__.py
   args.py
   compile_actions.py
+  console.py
   executor.py
   lang.py
   main.py
@@ -258,6 +272,7 @@ SOURCES
   net_actions.py
   onnx_actions.py
   target_machine.py
+  test_actions.py
 )
 
 add_mlir_python_modules(IREECompilerBuildPythonModules
@@ -363,8 +378,7 @@ endforeach()
 add_custom_command(
   OUTPUT ${_dylib_target_files}
   DEPENDS ${_dylib_src_files}
-  POST_BUILD
-    ${_dylib_copy_commands}
+  COMMAND ${_dylib_copy_commands}
 )
 
 add_custom_target(IREECompilerPythonDylibFiles

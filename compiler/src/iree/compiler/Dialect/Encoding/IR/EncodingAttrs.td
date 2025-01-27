@@ -8,6 +8,7 @@
 #define IREE_DIALECT_ENCODING_ATTRS
 
 include "iree/compiler/Dialect/Encoding/IR/EncodingBase.td"
+include "iree/compiler/Dialect/Encoding/IR/EncodingInterfaces.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 
@@ -40,11 +41,26 @@ def EncodingOpType : IREEEncoding_I32EnumAttr<"EncodingOpType",
 def EncodingOpTypeAttr:
   IREEEncoding_EnumAttr<EncodingOpType, "optype">;
 
+
+def PackedStorageAttr : IREEEncoding_Attr<"PackedStorage"> {
+  let mnemonic = "packed_storage";
+  let summary = [{Indicates packed storage data type.}];
+  let description = [{
+    This attribute indicates this is a back-to-back packed storage in memory.
+    This attribute takes no arguments.
+  }];
+  let genVerifyDecl = 0;
+}
+
 def EncodingAttr :
-    IREEEncoding_Attr<"Encoding"> {
+    IREEEncoding_Attr<"Encoding", [
+      DeclareAttrInterfaceMethods<IREEEncoding_EncodingLayoutAttrInterface, [
+        "calculateStorageSizeInBytes",
+      ]>
+    ]> {
   let mnemonic = "encoding";
   let summary = [{information to decide how to data-tile a tensor}];
-   let description = [{
+  let description = [{
     This attribute describes the change in the layout for
     a given tensor to execute subsequent operations on
     the tiled layout. The encoding serves as a way to
@@ -63,8 +79,19 @@ def EncodingAttr :
     AttrParameter<"ArrayAttr", "element types of the user's operands">:$element_types,
     OptionalParameter<"ArrayAttr", "Indexing maps of the operation using this tensor">:$user_indexing_maps,
     OptionalParameter<"AffineMapAttr", "Indexing map that represents the broadcasting dims in the producer">:$bcast_map,
-    // TODO(hanchung): The round_dims_to parameter can be revisited. We explicitly map them to M,N,K dimension for now.
-    OptionalParameter<"DenseArrayAttr", "Values for padding M,N,K dimensions">:$round_dims_to
+    // TODO(hanchung): Deprecate the round_dims_to field when we plumb the layouts
+    // field through the whole stack. See https://github.com/iree-org/iree/issues/17924
+    // for details. Note that today we abuse the attribute to carry narrow
+    // matrix information. The end goal is deprecating the field and add a
+    // "iteration_space_size" field to describe the shape. It is useful to
+    // handle narrow matrix cases.
+    OptionalParameter<"DenseArrayAttr", "Values for padding M,N,K dimensions">:$round_dims_to,
+    OptionalParameter<"ArrayAttr", "An array of attributes that describes the "
+    "potential layouts on the device. It is an array because a device could "
+    "have several executable targets. Note that it can be any attribute that "
+    "implements EncodingLayoutAttrInterface. The expectation of the field "
+    "is to bridge the logics between host codes and device codes. If an "
+    "attribute does not implement the interface, it could be discarded anytime.">:$layouts
   );
 
   let builders = [
@@ -73,7 +100,8 @@ def EncodingAttr :
         "ArrayRef<Type>":$elemTypes,
         CArg<"ArrayRef<AffineMap>", "{}">:$maps,
         CArg<"std::optional<AffineMap>", "{}">:$bcastMap,
-        CArg<"ArrayRef<int64_t>", "{}">:$roundDimsTo)>
+        CArg<"ArrayRef<int64_t>", "{}">:$roundDimsTo,
+        CArg<"ArrayRef<Attribute>", "{}">:$layouts)>
   ];
 
   let extraClassDeclaration = [{
@@ -81,21 +109,25 @@ def EncodingAttr :
     /// operand_index. The dimensions of the returned map are those of the
     /// data-tiled op's iteration space, and the results of the map are in
     /// the domain of the encoded tensor type.
-    AffineMap getMapForOperandIndex();
+    AffineMap getMapForOperandIndex() const;
 
     /// Given the dim position of the encoding `user_indexing_maps`, returns the
     /// matching index of the given encoding's tensor, using getMapForOperandIndex
     /// bcast_map and user_indexing_map.
-    std::optional<unsigned> mapDimToOperandIndex(int64_t dimPos);
+    std::optional<unsigned> mapDimToOperandIndex(int64_t dimPos) const;
 
     /// Returns an integer array with values in `round_dims_to`.
-    ArrayRef<int64_t> getRoundDimsToArray();
+    ArrayRef<int64_t> getRoundDimsToArray() const;
 
     /// Returns a vector with values in `element_types`.
     SmallVector<Type> getElementTypesArray();
 
     /// Clones an encoding with a new bcast_map
     EncodingAttr clone(AffineMap bcastMap);
+
+    /// Clones an encoding with a new layout list and drops other optional
+    /// parameters (because they are resolved).
+    EncodingAttr cloneWithLayouts(ArrayRef<Attribute> layouts);
   }];
 
   let genVerifyDecl = 0;

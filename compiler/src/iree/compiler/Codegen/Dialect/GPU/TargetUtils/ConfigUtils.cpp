@@ -8,6 +8,7 @@
 
 #include "iree/compiler/Codegen/Common/GPU/GPUHeuristics.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/GPULoweringConfigUtils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
@@ -31,11 +32,11 @@
 namespace mlir::iree_compiler::IREE::GPU {
 
 constexpr int64_t kCacheLineSizeBits = 128 * 8;
+constexpr int64_t kPreferredCopyNumBits = 128;
 
-LogicalResult
-setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
-                                   mlir::FunctionOpInterface entryPoint,
-                                   Operation *op) {
+LogicalResult setDataTiledMultiMmaLoweringConfig(
+    IREE::GPU::TargetAttr target, mlir::FunctionOpInterface entryPoint,
+    Operation *op, IREE::GPU::UKernelConfigAttr ukernelConfig) {
   auto multiMmaOp = dyn_cast<IREE::GPU::MultiMmaOp>(op);
   if (!multiMmaOp) {
     return failure();
@@ -53,8 +54,8 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
   // single subgroup.
   const int64_t targetSubgroupSize = dataTiledMmaAttr.getSubgroupSize();
   int64_t flatWorkgroupSize = targetSubgroupSize *
-                              dataTiledMmaAttr.getUnrollMToSubgroups() *
-                              dataTiledMmaAttr.getUnrollNToSubgroups();
+                              dataTiledMmaAttr.getSubgroupsM() *
+                              dataTiledMmaAttr.getSubgroupsN();
   std::array<int64_t, 3> workgroupSize{flatWorkgroupSize, 1, 1};
 
   // Set all workgroup and reduction tile sizes to 1, since the data tiled
@@ -69,7 +70,7 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
   SmallVector<int64_t> reductionTileSizes(iterationRank, 0);
   for (int64_t kDim : contractionDims.k) {
     workgroupTileSizes[kDim] = 0;
-    reductionTileSizes[kDim] = 1;
+    reductionTileSizes[kDim] = ukernelConfig ? 0 : 1;
   }
 
   // Set tile sizes.
@@ -80,8 +81,16 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
                      b.getI64ArrayAttr(workgroupTileSizes));
   attrs.emplace_back(b.getStringAttr("reduction"),
                      b.getI64ArrayAttr(reductionTileSizes));
-  // Promote operands to use shared memory for LHS and RHS.
-  GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+  if (ukernelConfig) {
+    attrs.emplace_back(b.getStringAttr("ukernel"), ukernelConfig);
+  } else {
+    // Promote operands to use shared memory for LHS and RHS.
+    // Don't do that with ukernels: their untiled reduction dimension is too
+    // large to fit in shared memory, so they just want global memory and they
+    // will take care of moving small chunks at a time into a shared memory
+    // operand that will be created together with the ukernel op.
+    GPU::setPromotedOperandList(context, attrs, {0, 1});
+  }
   auto configDict = b.getDictionaryAttr(attrs);
   auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
 
@@ -107,10 +116,10 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
 
 /// Given a target and a matmul problem, try to find an MMA schedule for the
 /// problem based on the available mma intrinsics.
-static std::optional<GPUMMASchedule>
-getMmaScheduleFromProblemAndTarget(IREE::GPU::TargetAttr target,
-                                   GPUMatmulShapeType problem,
-                                   bool transposedLhs, bool transposedRhs) {
+static std::optional<GPUMMASchedule> getMmaScheduleFromProblemAndTarget(
+    IREE::GPU::TargetAttr target, GPUMatmulShapeType problem,
+    bool transposedLhs, bool transposedRhs, bool mustBeAligned = true,
+    bool doCPromotion = false) {
   const int64_t targetSubgroupSize = target.getPreferredSubgroupSize();
   SmallVector<GPUMatmulShapeType> intrinsics;
   for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
@@ -152,15 +161,10 @@ getMmaScheduleFromProblemAndTarget(IREE::GPU::TargetAttr target,
   int64_t maxSharedMemoryBytes = target.getWgp().getMaxWorkgroupMemoryBytes();
 
   // First try to find a schedule with an exactly matching intrinsic.
-  std::optional<GPUMMASchedule> schedule =
-      deduceMMASchedule(problem, intrinsics, seeds, maxSharedMemoryBytes,
-                        targetSubgroupSize, transposedLhs, transposedRhs);
-  if (!schedule) {
-    // Then try again by allowing upcasting accumulator.
-    schedule = deduceMMASchedule(
-        problem, intrinsics, seeds, maxSharedMemoryBytes, targetSubgroupSize,
-        transposedLhs, transposedRhs, /*canUpcastAcc=*/true);
-  }
+  std::optional<GPUMMASchedule> schedule = deduceMMASchedule(
+      problem, intrinsics, seeds, maxSharedMemoryBytes, targetSubgroupSize,
+      transposedLhs, transposedRhs, /*canUpcastAcc=*/false,
+      /*mustBeAligned*/ mustBeAligned, doCPromotion);
   return schedule;
 }
 
@@ -237,8 +241,23 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
       nDims.back() !=
       llvm::cast<AffineDimExpr>(maps[1].getResults().back()).getPosition();
 
+  bool mustBeAligned = true;
+  bool doCPromotion = false;
   std::optional<GPUMMASchedule> schedule = getMmaScheduleFromProblemAndTarget(
       target, problem, transposedLhs, transposedRhs);
+
+  // TODO (nirvedhmeshram, qedawkins): The performance with this will be bad if
+  // the GEMM is accumulating (i.e doesnt have a zero fill dpsInit) as that
+  // buffer currently gets materialized as private memory. We need to add
+  // missing patterns to fix that.
+  if (!schedule) {
+    LDBG("Attempting to deduce unaligned TileAndFuse MMA schedulee");
+    mustBeAligned = false;
+    doCPromotion = true;
+    schedule = getMmaScheduleFromProblemAndTarget(target, problem,
+                                                  transposedLhs, transposedRhs,
+                                                  mustBeAligned, doCPromotion);
+  }
 
   if (!schedule) {
     LDBG("Failed to deduce TileAndFuse MMA schedule");
@@ -269,23 +288,23 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
     reductionTileSizes[k] = 1;
   }
 
-  // Adjust the inner bound size for packing to intrinsic shapes, since tiling
-  // happens after packing.
-  assert(bounds[mDims.back()] % schedule->mSize == 0 &&
-         bounds[nDims.back()] % schedule->nSize == 0 &&
-         "expected inner bound to be evenly divisible by schedule sizes.");
-  bounds[mDims.back()] /= schedule->mSize;
-  bounds[nDims.back()] /= schedule->nSize;
-
   // Compute the M/N dimension tile sizes by multiplying subgroup information.
   for (auto [i, mDim] : llvm::enumerate(mDims)) {
     workgroupTileSizes[mDim] =
         schedule->mSubgroupCounts[i] * schedule->mTileSizes[i];
+    // Multiply by the intrinsic shape for the inner most dim as we distribute
+    // to workgroups before packing to intrinsic.
+    if (i == mDims.size() - 1)
+      workgroupTileSizes[mDim] *= schedule->mSize;
     subgroupTileSizes[mDim] = schedule->mTileSizes[i];
   }
   for (auto [i, nDim] : llvm::enumerate(nDims)) {
     workgroupTileSizes[nDim] =
         schedule->nSubgroupCounts[i] * schedule->nTileSizes[i];
+    // Multiply by the intrinsic shape for the inner most dim as we distribute
+    // to workgroups before packing to intrinsic.
+    if (i == nDims.size() - 1)
+      workgroupTileSizes[nDim] *= schedule->nSize;
     subgroupTileSizes[nDim] = schedule->nTileSizes[i];
   }
 
@@ -309,7 +328,19 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
   attrs.emplace_back(StringAttr::get(context, "subgroup"),
                      b.getI64ArrayAttr(subgroupTileSizes));
   attrs.emplace_back(StringAttr::get(context, "mma_kind"), mmaKind);
-  GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+  if (mustBeAligned) {
+    GPU::setPromotedOperandList(context, attrs, {0, 1});
+  } else {
+    // TODO (nirvedhmeshram, Max191, jerryyin) : Add support so that unaligned
+    // shapes do not require c promotion.
+    GPU::setPromotedOperandList(context, attrs, {0, 1, 2});
+    SmallVector<int64_t> paddingTileSizes = workgroupTileSizes;
+    int64_t innerKDim = contractionDims.k.back();
+    int64_t kPackFactor = std::get<2>(mmaKind.getMNKShape());
+    paddingTileSizes[innerKDim] = reductionTileSizes[innerKDim] * kPackFactor;
+    attrs.emplace_back(StringAttr::get(context, "padding"),
+                       b.getI64ArrayAttr(paddingTileSizes));
+  }
   auto configDict = DictionaryAttr::get(context, attrs);
   auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
   int64_t flatWorkgroupSize =
@@ -649,7 +680,7 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
                      b.getI64ArrayAttr(threadTileSizes));
 
   if (isNonMatvecContraction(linalgOp)) {
-    GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+    GPU::setPromotedOperandList(context, attrs, {0, 1});
   }
 
   // Heuristic value chosen to limit maximum vector sizes when tiling below.
@@ -693,6 +724,115 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
       entryPoint, op, loweringConfig,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
       {flatWorkgroupSize, 1, 1}, subgroupSize, DictionaryAttr());
+}
+
+LogicalResult setScatterLoweringConfig(IREE::GPU::TargetAttr target,
+                                       mlir::FunctionOpInterface entryPoint,
+                                       Operation *op) {
+  auto scatter = dyn_cast<IREE::LinalgExt::ScatterOp>(op);
+  if (!scatter) {
+    return failure();
+  }
+
+  // TODO: Support non-unique indices.
+  if (!scatter.getUniqueIndices()) {
+    return failure();
+  }
+
+  // Various problem parameters.
+  int64_t loopDepth = scatter.getLoopIteratorTypes().size();
+  int64_t elemBits = scatter.getOriginalType().getElementTypeBitWidth();
+  SmallVector<int64_t> loopBounds = scatter.getStaticLoopRanges().value_or(
+      SmallVector<int64_t>(loopDepth, ShapedType::kDynamic));
+
+  // Configurations we need to decide.
+  int64_t flatWorkgroupSize = target.getPreferredSubgroupSize();
+  SmallVector<int64_t> workgroupTileSizes(loopDepth, 1);
+  SmallVector<int64_t> threadTileSizes(loopDepth, 1);
+  int64_t vectorSize = kPreferredCopyNumBits / elemBits;
+
+  bool innerDynamic = ShapedType::isDynamic(loopBounds.back());
+
+  // Do not bother trying to vectorize if there are no vectorizable dims.
+  if (loopDepth == 1) {
+    vectorSize = 1;
+  } else if (!innerDynamic) {
+    // Use the largest power of 2 that divides the inner most non-scattered dim.
+    vectorSize = std::gcd(vectorSize, loopBounds.back());
+  }
+
+  threadTileSizes.back() = vectorSize;
+  int64_t residualInnerSize =
+      innerDynamic ? loopBounds.back() : loopBounds.back() / vectorSize;
+
+  // If the inner most dim is dynamic or exceeds the expected number of threads,
+  // Only distribute threads along the inner most dimension.
+  if (ShapedType::isDynamic(residualInnerSize) ||
+      residualInnerSize >= flatWorkgroupSize) {
+    workgroupTileSizes.back() = vectorSize * flatWorkgroupSize;
+  } else { // residualInnerSize < flatWorkgroupSize
+    // Floordiv to overestimate the required number of threads.
+    int64_t residualThreads = flatWorkgroupSize / residualInnerSize;
+    workgroupTileSizes.back() = residualInnerSize * vectorSize;
+    for (int64_t i = loopDepth - 2, e = 0; i >= e; --i) {
+      if (residualThreads <= 1) {
+        break;
+      }
+
+      bool dynamicDim = ShapedType::isDynamic(loopBounds[i]);
+      workgroupTileSizes[i] = dynamicDim
+                                  ? residualThreads
+                                  : std::min(residualThreads, loopBounds[i]);
+      residualThreads = dynamicDim ? 1 : residualThreads / loopBounds[i];
+    }
+  }
+
+  int64_t numBatch = scatter.getBatchRank();
+  // Currently bufferization will fail if the only dimension distributed to
+  // workgroups is the batch dims because the workgroup level slice will fold
+  // away and cause a mismatch. To work around this we ensure that at least one
+  // inner dim is always at least partially distributed to workgroups.
+  if (llvm::all_of_zip(llvm::drop_begin(workgroupTileSizes, numBatch),
+                       llvm::drop_begin(loopBounds, numBatch),
+                       [](int64_t tileSize, int64_t bound) {
+                         return tileSize == bound || tileSize == 0;
+                       })) {
+    bool hasNonUnitInnerSlice = false;
+    for (int i = numBatch, e = loopDepth; i < e; ++i) {
+      if (workgroupTileSizes[i] > 1) {
+        workgroupTileSizes[i] /= 2;
+        hasNonUnitInnerSlice = true;
+        break;
+      }
+    }
+    // If the inner most slice is a single element then we have to bail out.
+    // TODO: Support this case.
+    if (!hasNonUnitInnerSlice) {
+      return failure();
+    }
+  }
+
+  // Attach the MMA schedule as an attribute to the entry point export function
+  // for later access in the pipeline.
+  MLIRContext *context = scatter.getContext();
+  SmallVector<NamedAttribute, 1> attrs;
+  Builder b(context);
+  attrs.emplace_back(StringAttr::get(context, "workgroup"),
+                     b.getI64ArrayAttr(workgroupTileSizes));
+
+  attrs.emplace_back(StringAttr::get(context, "thread"),
+                     b.getI64ArrayAttr(threadTileSizes));
+
+  auto configDict = DictionaryAttr::get(context, attrs);
+  auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
+
+  LDBG("Selected tile and fuse lowering config: " << loweringConfig << "\n");
+
+  // TODO(qedawkins): Use a shared pipeline identifier here.
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPoint, scatter, loweringConfig,
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
+      {flatWorkgroupSize, 1, 1}, flatWorkgroupSize, DictionaryAttr());
 }
 
 //===----------------------------------------------------------------------===//
@@ -749,9 +889,6 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
     switch (options.reorderStrategy.value()) {
     case ReorderWorkgroupsStrategy::Transpose:
       reorderStr = "transpose";
-      break;
-    case ReorderWorkgroupsStrategy::Swizzle:
-      reorderStr = "swizzle";
       break;
     case ReorderWorkgroupsStrategy::None:
       reorderStr = "none";
