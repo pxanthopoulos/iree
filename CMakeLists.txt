@@ -1200,3 +1200,72 @@ iree_add_install_target(
   COMPONENT IREETools-Runtime
   ADD_TO iree-install-tools
 )
+
+include(ExternalProject)
+ExternalProject_Add(scotch
+  SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/scotch
+  PREFIX ${CMAKE_BINARY_DIR}/third_party/scotch
+  CONFIGURE_COMMAND
+    cmake -G ${CMAKE_GENERATOR}
+          -B <BINARY_DIR>
+          -S <SOURCE_DIR>
+          -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+          -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+          -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+          -DBUILD_SHARED_LIBS=OFF
+          -DBUILD_PTSCOTCH=OFF
+          -DBUILD_FORTRAN=OFF
+          -DBUILD_LIBSCOTCHMETIS=OFF
+          -DSCOTCH_METIS_PREFIX=OFF
+          -DINTSIZE=64
+          -DCMAKE_C_FLAGS="-Wno-deprecated-non-prototype"
+          -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+  BUILD_COMMAND
+    cmake --build <BINARY_DIR> -j 1
+  INSTALL_COMMAND
+    cmake --install <BINARY_DIR>
+  BUILD_IN_SOURCE 0
+  BUILD_BYPRODUCTS
+    <INSTALL_DIR>/lib/libscotch.a
+    <INSTALL_DIR>/lib/libscotcherr.a
+)
+# include_directories(${CMAKE_BINARY_DIR}/third_party/scotch/include)
+
+ExternalProject_Add(gklib
+  SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/gklib
+  PREFIX ${CMAKE_BINARY_DIR}/third_party/gklib
+  CONFIGURE_COMMAND
+    cd <SOURCE_DIR> && make config cc=${CMAKE_C_COMPILER} prefix=<INSTALL_DIR> openmp=1
+  BUILD_COMMAND
+    cd <SOURCE_DIR> && make
+  INSTALL_COMMAND
+    cd <SOURCE_DIR> && make install
+  BUILD_IN_SOURCE 0
+  BUILD_BYPRODUCTS
+    <INSTALL_DIR>/lib/libGKlib.a
+)
+
+ExternalProject_Add(metis
+  DEPENDS gklib
+  SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/metis
+  PREFIX ${CMAKE_BINARY_DIR}/third_party/metis
+  CONFIGURE_COMMAND
+    sed -i "36cset(CMAKE_C_FLAGS \"-Wno-absolute-value \${CMAKE_C_FLAGS}\")" <SOURCE_DIR>/CMakeLists.txt &&
+    cd <SOURCE_DIR> && 
+    make config cc=${CMAKE_C_COMPILER}
+                prefix=<INSTALL_DIR>
+                gklib_path=${CMAKE_BINARY_DIR}/third_party/gklib
+                i64=1
+                r64=1
+                gdb=1
+                assert=1
+                openmp=1
+  BUILD_COMMAND
+    cd <SOURCE_DIR> && make
+  INSTALL_COMMAND
+    cd <SOURCE_DIR> && make install
+  BUILD_IN_SOURCE 0
+  BUILD_BYPRODUCTS
+    <INSTALL_DIR>/lib/libmetis.a
+)
+# include_directories(${CMAKE_BINARY_DIR}/third_party/metis/include)
