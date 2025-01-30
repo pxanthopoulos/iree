@@ -49,3 +49,7 @@
 [submodule "third_party/metis"]
 	path = third_party/metis
 	url = https://github.com/KarypisLab/METIS.git
+[submodule "third_party/dag-partitioning"]
+	path = third_party/dag-partitioning
+	url = https://github.com/pxanthopoulos/dag-partitioning.git
+	branch = main
