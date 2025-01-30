@@ -1109,11 +1109,16 @@ iree_add_install_target(
   ADD_TO iree-install-tools
 )
 
+#-------------------------------------------------------------------------------
+# My features
+#-------------------------------------------------------------------------------
+
 include(ExternalProject)
 ExternalProject_Add(scotch
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/scotch
   PREFIX ${CMAKE_BINARY_DIR}/third_party/scotch
   CONFIGURE_COMMAND
+    sed -i "101cset(CMAKE_POSITION_INDEPENDENT_CODE ON)" <SOURCE_DIR>/CMakeLists.txt &&
     cmake -G ${CMAKE_GENERATOR}
           -B <BINARY_DIR>
           -S <SOURCE_DIR>
@@ -1121,12 +1126,12 @@ ExternalProject_Add(scotch
           -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
           -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
           -DBUILD_SHARED_LIBS=OFF
+          -DCMAKE_C_FLAGS="-Wno-deprecated-non-prototype"
           -DBUILD_PTSCOTCH=OFF
           -DBUILD_FORTRAN=OFF
           -DBUILD_LIBSCOTCHMETIS=OFF
           -DSCOTCH_METIS_PREFIX=OFF
           -DINTSIZE=64
-          -DCMAKE_C_FLAGS="-Wno-deprecated-non-prototype"
           -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
   BUILD_COMMAND
     cmake --build <BINARY_DIR> -j 1
@@ -1138,10 +1143,24 @@ ExternalProject_Add(scotch
     <INSTALL_DIR>/lib/libscotcherr.a
 )
 
+add_library(scotch-imported STATIC IMPORTED GLOBAL)
+add_dependencies(scotch-imported scotch)
+set_target_properties(scotch-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotch.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/third_party/scotch/include"
+)
+
+add_library(scotcherr-imported STATIC IMPORTED GLOBAL)
+add_dependencies(scotcherr-imported scotch)
+set_target_properties(scotcherr-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotcherr.a"
+)
+
 ExternalProject_Add(gklib
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/gklib
   PREFIX ${CMAKE_BINARY_DIR}/third_party/gklib
   CONFIGURE_COMMAND
+    sed -i "3cset(CMAKE_C_FLAGS \"-fPIC \${CMAKE_C_FLAGS}\")" <SOURCE_DIR>/CMakeLists.txt &&
     cd <SOURCE_DIR> && make config cc=${CMAKE_C_COMPILER} prefix=<INSTALL_DIR> openmp=1
   BUILD_COMMAND
     cd <SOURCE_DIR> && make
@@ -1152,12 +1171,18 @@ ExternalProject_Add(gklib
     <INSTALL_DIR>/lib/libGKlib.a
 )
 
+add_library(gklib-imported STATIC IMPORTED GLOBAL)
+add_dependencies(gklib-imported gklib)
+set_target_properties(gklib-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/gklib/lib/libGKlib.a"
+)
+
 ExternalProject_Add(metis
   DEPENDS gklib
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/metis
   PREFIX ${CMAKE_BINARY_DIR}/third_party/metis
   CONFIGURE_COMMAND
-    sed -i "36cset(CMAKE_C_FLAGS \"-Wno-absolute-value \${CMAKE_C_FLAGS}\")" <SOURCE_DIR>/CMakeLists.txt &&
+    sed -i "36cset(CMAKE_C_FLAGS \"-Wno-absolute-value -fPIC \${CMAKE_C_FLAGS}\")" <SOURCE_DIR>/CMakeLists.txt &&
     cd <SOURCE_DIR> && 
     make config cc=${CMAKE_C_COMPILER}
                 prefix=<INSTALL_DIR>
@@ -1176,8 +1201,44 @@ ExternalProject_Add(metis
     <INSTALL_DIR>/lib/libmetis.a
 )
 
-include_directories(${CMAKE_BINARY_DIR}/third_party/metis/include)
-include_directories(${CMAKE_BINARY_DIR}/third_party/scotch/include)
+add_library(metis-imported STATIC IMPORTED GLOBAL)
+add_dependencies(metis-imported metis)
+set_target_properties(metis-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/metis/lib/libmetis.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/third_party/metis/include"
+)
 
-add_subdirectory(third_party/dag-partitioning)
-add_dependencies(dag_partitioning scotch metis gklib)
+ExternalProject_Add(dag-partitioning
+  DEPENDS metis scotch
+  SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/dag-partitioning
+  PREFIX ${CMAKE_BINARY_DIR}/third_party/dag-partitioning
+  CONFIGURE_COMMAND
+    cmake -G ${CMAKE_GENERATOR}
+          -B <BINARY_DIR>
+          -S <SOURCE_DIR>
+          -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+          -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+          -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+          -DSCOTCH_LIBRARY=${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotch.a
+          -DSCOTCHERR_LIBRARY=${CMAKE_BINARY_DIR}/third_party/scotch/lib/libscotcherr.a
+          -DMETIS_LIBRARY=${CMAKE_BINARY_DIR}/third_party/metis/lib/libmetis.a
+          -DSCOTCH_INCLUDE_DIR=${CMAKE_BINARY_DIR}/third_party/scotch/include
+          -DMETIS_INCLUDE_DIR=${CMAKE_BINARY_DIR}/third_party/metis/include
+  BUILD_COMMAND
+    cmake --build <BINARY_DIR> -j 1
+  INSTALL_COMMAND
+    cmake --install <BINARY_DIR>
+  BUILD_IN_SOURCE 0
+  BUILD_BYPRODUCTS
+    <INSTALL_DIR>/lib/libdag_partitioning.a
+)
+
+add_library(dag-partitioning-imported STATIC IMPORTED GLOBAL)
+add_dependencies(dag-partitioning-imported dag-partitioning)
+set_target_properties(dag-partitioning-imported PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/third_party/dag-partitioning/lib/libdag_partitioning.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/third_party/dag-partitioning/src/Graph/include;${CMAKE_SOURCE_DIR}/third_party/dag-partitioning/src/Driver/include;${CMAKE_SOURCE_DIR}/third_party/dag-partitioning/src/Refinement/include"
+    INTERFACE_LINK_LIBRARIES "scotch-imported;scotcherr-imported;metis-imported;gklib-imported"
+)

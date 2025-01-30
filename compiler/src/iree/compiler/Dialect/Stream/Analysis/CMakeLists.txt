@@ -39,6 +39,7 @@ iree_cc_library(
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::IR
+    dag-partitioning-imported
   PUBLIC
 )
 
