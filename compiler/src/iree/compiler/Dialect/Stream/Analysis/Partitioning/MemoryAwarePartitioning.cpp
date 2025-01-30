@@ -1,3 +1,5 @@
+#include "Graph.h"
+#include "RecursivePartitioner.h"
 #include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "llvm/Support/CommandLine.h"
@@ -52,6 +54,7 @@ bool partitionToDotGraph(size_t partitionIndex, Partition &partition) {
                           << "/partition-graph-" << partitionIndex
                           << ".dot opened successfully.\n");
 
+  outFile << "// size=" << partition.ops.size() << "\n";
   outFile << "digraph cfg {\n";
 
   llvm::DenseMap<unsigned, Operation *> opMap;
@@ -141,6 +144,27 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     if (!partitionToDotGraph(partitionIndex, partition))
       result.partitions.push_back(std::move(partition));
     else {
+      Graph graph =
+          readDotFile(clMemoryAwarePartitioningIODir + "/partition-graph-" +
+                          std::to_string(partitionIndex) + ".dot",
+                      clMemoryAwarePartitioningIODir + "/partition-graph-" +
+                          std::to_string(partitionIndex) + ".dot.nodemappings");
+
+      const uint64_t partitionNum =
+          std::max((uint64_t)10, partition.ops.size());
+      const uint64_t maxLevel = 20;
+      const uint64_t minSize = 50 * partitionNum;
+      const double vertexRatio = 0.9;
+      const double maxImbalance = 1.01;
+      const uint64_t maxPasses = 10;
+      RecursivePartitioner partitioner(
+          graph, partitionNum, ClusteringMethod::HYB, maxLevel, minSize,
+          vertexRatio, BisectionMethod::UNDIRBOTH, maxImbalance,
+          RefinementMethod::MIXED, maxPasses);
+
+      auto [partitionInfo, cutSize] = partitioner.run();
+      llvm::dbgs() << "Cut size: " << cutSize << "\n";
+
       result.partitions.push_back(std::move(partition));
     }
   }
