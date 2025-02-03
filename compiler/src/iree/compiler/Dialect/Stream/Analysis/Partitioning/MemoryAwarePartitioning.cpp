@@ -17,6 +17,177 @@ static llvm::cl::opt<std::string> clMemoryAwarePartitioningIODir(
     llvm::cl::desc("Memory aware partitioning IO dir for dot graphs"),
     llvm::cl::init("."));
 
+struct MemoryAwarePartitioningConfig {
+  uint64_t numPartitions;
+  ClusteringMethod clusteringMethod;
+  uint64_t maxClusteringLevel;
+  double minClusteringVertexRatio;
+  BisectionMethod bisectionMethod;
+  double maxImbalance;
+  RefinementMethod refinementMethod;
+  uint64_t maxRefinementPasses;
+
+  MemoryAwarePartitioningConfig(
+      const char *V = "1,HYB,20,0.9,BOTH,1.1,MIX,10") {
+    numPartitions = 1;
+    clusteringMethod = ClusteringMethod::HYB;
+    maxClusteringLevel = 20;
+    minClusteringVertexRatio = 0.9;
+    bisectionMethod = BisectionMethod::UNDIRBOTH;
+    maxImbalance = 1.1;
+    refinementMethod = RefinementMethod::MIXED;
+    maxRefinementPasses = 10;
+  }
+
+  void print() const {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Memory-Aware Partitioning Configuration:\n"
+                   << "  Number of Partitions: " << numPartitions << "\n"
+                   << "  Clustering Method: ";
+
+      switch (clusteringMethod) {
+      case ClusteringMethod::FORB:
+        llvm::dbgs() << "FORB (Forbidden edges)";
+        break;
+      case ClusteringMethod::CYC:
+        llvm::dbgs() << "CYC (Cycle detection)";
+        break;
+      case ClusteringMethod::HYB:
+        llvm::dbgs() << "HYB (Hybrid approach)";
+        break;
+      }
+
+      llvm::dbgs() << "\n  Max Clustering Level: " << maxClusteringLevel
+                   << "\n  Min Clustering Vertex Ratio: "
+                   << minClusteringVertexRatio << "\n  Bisection Method: ";
+
+      switch (bisectionMethod) {
+      case BisectionMethod::GGG:
+        llvm::dbgs() << "GGG (Greedy directed graph growing)";
+        break;
+      case BisectionMethod::UNDIRMETIS:
+        llvm::dbgs() << "UNDIRMETIS (Undirected METIS)";
+        break;
+      case BisectionMethod::UNDIRSCOTCH:
+        llvm::dbgs() << "UNDIRSCOTCH (Undirected Scotch)";
+        break;
+      case BisectionMethod::UNDIRBOTH:
+        llvm::dbgs() << "UNDIRBOTH (Try both METIS and Scotch)";
+        break;
+      }
+
+      llvm::dbgs() << "\n  Max Imbalance: " << maxImbalance
+                   << "\n  Refinement Method: ";
+
+      switch (refinementMethod) {
+      case RefinementMethod::BOUNDARYFM:
+        llvm::dbgs() << "BOUNDARYFM (Boundary FM adaptation)";
+        break;
+      case RefinementMethod::BOUNDARYKL:
+        llvm::dbgs() << "BOUNDARYKL (Boundary KL adaptation)";
+        break;
+      case RefinementMethod::MIXED:
+        llvm::dbgs() << "MIXED (KL + FM)";
+        break;
+      }
+
+      llvm::dbgs() << "\n  Max Refinement Passes: " << maxRefinementPasses
+                   << "\n";
+    });
+  }
+};
+
+struct MemoryAwarePartitioningConfigParser
+    : public llvm::cl::parser<MemoryAwarePartitioningConfig> {
+  MemoryAwarePartitioningConfigParser(llvm::cl::Option &O)
+      : llvm::cl::parser<MemoryAwarePartitioningConfig>(O) {}
+
+  bool parse(llvm::cl::Option &O, llvm::StringRef ArgName, llvm::StringRef Arg,
+             MemoryAwarePartitioningConfig &V) {
+    llvm::SmallVector<llvm::StringRef, 8> Parts;
+    Arg.split(Parts, ',');
+
+    if (Parts.size() != 8)
+      return O.error("expected 8 comma-separated values");
+
+    if (Parts[0].getAsInteger(10, V.numPartitions))
+      return O.error("invalid number of partitions");
+
+    if (Parts[1].compare("FORB") == 0) {
+      V.clusteringMethod = ClusteringMethod::FORB;
+    } else if (Parts[1].compare("CYC") == 0) {
+      V.clusteringMethod = ClusteringMethod::CYC;
+    } else if (Parts[1].compare("HYB") == 0) {
+      V.clusteringMethod = ClusteringMethod::HYB;
+    } else {
+      return O.error("invalid clustering method (expected: FORB|CYC|HYB)");
+    }
+
+    if (Parts[2].getAsInteger(10, V.maxClusteringLevel))
+      return O.error("invalid clustering level");
+
+    double Ratio;
+    if (Parts[3].getAsDouble(Ratio) || Ratio <= 0.0 || Ratio >= 1.0)
+      return O.error("clustering ratio must be between 0 and 1");
+    V.minClusteringVertexRatio = Ratio;
+
+    if (Parts[4].compare("GGG") == 0) {
+      V.bisectionMethod = BisectionMethod::GGG;
+    } else if (Parts[4].compare("SCOTCH") == 0) {
+      V.bisectionMethod = BisectionMethod::UNDIRSCOTCH;
+    } else if (Parts[4].compare("METIS") == 0) {
+      V.bisectionMethod = BisectionMethod::UNDIRMETIS;
+    } else if (Parts[4].compare("BOTH") == 0) {
+      V.bisectionMethod = BisectionMethod::UNDIRBOTH;
+    } else {
+      return O.error(
+          "invalid bisection method (expected: GGG|SCOTCH|METIS|BOTH)");
+    }
+
+    double Imbalance;
+    if (Parts[5].getAsDouble(Imbalance) || Imbalance <= 1.0)
+      return O.error("imbalance must be greater than 1");
+    V.maxImbalance = Imbalance;
+
+    if (Parts[6].compare("FM") == 0) {
+      V.refinementMethod = RefinementMethod::BOUNDARYFM;
+    } else if (Parts[6].compare("KL") == 0) {
+      V.refinementMethod = RefinementMethod::BOUNDARYKL;
+    } else if (Parts[6].compare("MIX") == 0) {
+      V.refinementMethod = RefinementMethod::MIXED;
+    } else {
+      return O.error("invalid refinement method (expected: FM|KL|MIX)");
+    }
+
+    if (Parts[7].getAsInteger(10, V.maxRefinementPasses))
+      return O.error("invalid refinement passes");
+
+    return false;
+  }
+};
+
+static llvm::cl::opt<MemoryAwarePartitioningConfig, false,
+                     MemoryAwarePartitioningConfigParser>
+    clMemoryAwarePartitioningConfig(
+        "iree-stream-memory-aware-partitioning-config",
+        llvm::cl::desc(
+            "--iree-stream-memory-aware-partitioning-config=np,cm,cl,vr,bm,i,"
+            "rm,rp\n"
+            "Comma-separated list of configuration variables for the "
+            "partitioning phase:\n"
+            "  np = numberOfPartitions (int)\n"
+            "  cm = clusteringMethod (FORB|CYC|HYB)\n"
+            "  cl = maxClusteringLevel (int)\n"
+            "  vr = minClusteringVertexRatio (float, 0.0 < x < 1.0)\n"
+            "  bm = bisectionMethod (GGG|SCOTCH|METIS|BOTH)\n"
+            "  i  = maxImbalance (float, 1.0 < x)\n"
+            "  rm = refinementMethod (FM|KL|MIX)\n"
+            "  rp = maxRefinementPasses (int)\n"
+            "Example: "
+            "--iree-stream-memory-aware-partitioning-config=1,HYB,20,0.9,BOTH,"
+            "1.1,MIX,10"),
+        llvm::cl::init("1,HYB,20,0.9,BOTH,1.1,MIX,10"));
+
 static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
   auto *rootOp = block->getParentOp();
   while (auto parentOp = rootOp->getParentOp()) {
@@ -130,6 +301,15 @@ bool partitionToDotGraph(size_t partitionIndex, Partition &partition) {
   return true;
 }
 
+uint64_t calculateMaxPartSize(const std::vector<uint64_t> &partitionInfo,
+                              const Graph &graph, uint64_t numPartitions) {
+  std::vector<uint64_t> partSizes(numPartitions, 0);
+  for (uint64_t i = 0; i < partitionInfo.size(); ++i) {
+    partSizes[partitionInfo[i]] += graph.nodeWeights[i];
+  }
+  return *std::max_element(partSizes.begin(), partSizes.end());
+}
+
 PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
                                   Block *block) {
   PartitionSet result;
@@ -149,21 +329,29 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
                           std::to_string(partitionIndex) + ".dot",
                       clMemoryAwarePartitioningIODir + "/partition-graph-" +
                           std::to_string(partitionIndex) + ".dot.nodemappings");
-
-      const uint64_t partitionNum =
-          std::max((uint64_t)10, partition.ops.size());
-      const uint64_t maxLevel = 20;
-      const uint64_t minSize = 50 * partitionNum;
-      const double vertexRatio = 0.9;
-      const double maxImbalance = 1.01;
-      const uint64_t maxPasses = 10;
+      uint64_t numPartitions = std::min(
+          clMemoryAwarePartitioningConfig.numPartitions, partition.ops.size());
       RecursivePartitioner partitioner(
-          graph, partitionNum, ClusteringMethod::HYB, maxLevel, minSize,
-          vertexRatio, BisectionMethod::UNDIRBOTH, maxImbalance,
-          RefinementMethod::MIXED, maxPasses);
+          graph, numPartitions,
+          clMemoryAwarePartitioningConfig.clusteringMethod,
+          clMemoryAwarePartitioningConfig.maxClusteringLevel,
+          50 * clMemoryAwarePartitioningConfig.numPartitions,
+          clMemoryAwarePartitioningConfig.minClusteringVertexRatio,
+          clMemoryAwarePartitioningConfig.bisectionMethod,
+          clMemoryAwarePartitioningConfig.maxImbalance,
+          clMemoryAwarePartitioningConfig.refinementMethod,
+          clMemoryAwarePartitioningConfig.maxRefinementPasses);
 
       auto [partitionInfo, cutSize] = partitioner.run();
-      llvm::dbgs() << "Cut size: " << cutSize << "\n";
+      uint64_t maxPartSize =
+          calculateMaxPartSize(partitionInfo, graph, numPartitions);
+      double imbalance =
+          std::abs(((double)maxPartSize / (double)graph.totalWeight) * 100 -
+                   ((double)100 / (double)numPartitions));
+      imbalance = round(imbalance * 10) / 10;
+      llvm::dbgs() << "Cut size: " << cutSize << "\nImbalance: " << imbalance
+                   << "\n";
+      clMemoryAwarePartitioningConfig.print();
 
       result.partitions.push_back(std::move(partition));
     }
