@@ -317,17 +317,60 @@ uint64_t calculateMaxPartSize(const std::vector<uint64_t> &partitionInfo,
 
 // Returns op groups, topologically sorted with ops inside them topologically
 // sorted as well based on partitionInfo
-SmallVector<SetVector<Operation *>>
+SmallVector<SmallVector<Operation *>>
 createOpGroups(const std::vector<uint64_t> &partitionInfo,
-               DenseMap<unsigned, Operation *> opMap) {
-  return {};
+               DenseMap<unsigned, Operation *> opMap,
+               const std::vector<uint64_t> &topSort) {
+  // Combined structure for partition data
+  struct PartitionData {
+    SmallVector<std::pair<Operation *, uint64_t>> ops;
+    uint64_t minTopSort = UINT64_MAX;
+  };
+  DenseMap<uint64_t, PartitionData> partitionData;
+
+  // Single pass for grouping and finding minimums
+  for (unsigned i = 0; i < partitionInfo.size(); i++) {
+    if (auto op = opMap.lookup(i)) {
+      uint64_t partId = partitionInfo[i];
+      uint64_t topSortPos = topSort[i];
+      auto &data = partitionData[partId];
+      data.ops.push_back({op, topSortPos});
+      data.minTopSort = std::min(data.minTopSort, topSortPos);
+    }
+  }
+
+  // Create and sort partition list
+  SmallVector<uint64_t> sortedPartitions;
+  for (const auto &entry : partitionData)
+    sortedPartitions.push_back(entry.first);
+
+  llvm::sort(sortedPartitions, [&](uint64_t a, uint64_t b) {
+    return partitionData[a].minTopSort < partitionData[b].minTopSort;
+  });
+
+  // Create final result
+  SmallVector<SmallVector<Operation *>> result;
+  for (uint64_t partitionId : sortedPartitions) {
+    auto &ops = partitionData[partitionId].ops;
+    llvm::sort(
+        ops, [](const auto &a, const auto &b) { return a.second < b.second; });
+
+    SmallVector<Operation *> partitionOps;
+    for (const auto &op : ops)
+      partitionOps.push_back(op.first);
+
+    result.push_back(std::move(partitionOps));
+  }
+
+  return result;
 }
 
 SmallVector<Partition>
 createPartitions(const std::vector<uint64_t> &partitionInfo,
                  DenseMap<unsigned, Operation *> opMap,
+                 const std::vector<uint64_t> &topSort,
                  IREE::Stream::AffinityAttr affinity) {
-  auto opGroups = createOpGroups(partitionInfo, opMap);
+  auto opGroups = createOpGroups(partitionInfo, opMap, topSort);
   SmallVector<Partition> result;
 
   for (auto &opGroup : opGroups) {
@@ -411,8 +454,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         clMemoryAwarePartitioningConfig.print();
       });
 
-      SmallVector<Partition> partitions =
-          createPartitions(partitionInfo, opMap, partition.affinity);
+      SmallVector<Partition> partitions = createPartitions(
+          partitionInfo, opMap, graph.topologicalSort(), partition.affinity);
       for (auto &partition : partitions)
         // result.partitions.push_back(std::move(partition));
 
