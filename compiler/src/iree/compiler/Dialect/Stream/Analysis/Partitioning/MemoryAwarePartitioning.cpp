@@ -317,7 +317,7 @@ uint64_t calculateMaxPartSize(const std::vector<uint64_t> &partitionInfo,
 
 // Returns op groups, topologically sorted with ops inside them topologically
 // sorted as well based on partitionInfo
-SmallVector<SmallVector<Operation *>>
+SmallVector<SetVector<Operation *>>
 createOpGroups(const std::vector<uint64_t> &partitionInfo,
                DenseMap<unsigned, Operation *> opMap,
                const std::vector<uint64_t> &topSort) {
@@ -349,15 +349,15 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
   });
 
   // Create final result
-  SmallVector<SmallVector<Operation *>> result;
+  SmallVector<SetVector<Operation *>> result;
   for (uint64_t partitionId : sortedPartitions) {
     auto &ops = partitionData[partitionId].ops;
     llvm::sort(
         ops, [](const auto &a, const auto &b) { return a.second < b.second; });
 
-    SmallVector<Operation *> partitionOps;
+    SetVector<Operation *> partitionOps;
     for (const auto &op : ops)
-      partitionOps.push_back(op.first);
+      partitionOps.insert(op.first);
 
     result.push_back(std::move(partitionOps));
   }
@@ -457,8 +457,6 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       SmallVector<Partition> partitions = createPartitions(
           partitionInfo, opMap, graph.topologicalSort(), partition.affinity);
       for (auto &partition : partitions)
-        // result.partitions.push_back(std::move(partition));
-
         result.partitions.push_back(std::move(partition));
     }
   }
