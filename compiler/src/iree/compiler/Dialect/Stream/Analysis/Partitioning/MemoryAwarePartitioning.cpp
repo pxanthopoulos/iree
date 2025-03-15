@@ -204,10 +204,13 @@ static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
 }
 
 bool checkSomeDispatches(Partition partition) {
+  bool oneDispatch = false;
   for (const auto &op : partition.ops) {
     auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
-    if (dispatchOp)
+    if (dispatchOp && oneDispatch)
       return true;
+    if (dispatchOp)
+      oneDispatch = true;
   }
   return false;
 }
