@@ -225,7 +225,7 @@ partitionToDotGraph(size_t partitionIndex, Partition &partition) {
         llvm::inconvertibleErrorCode(),
         llvm::formatv(
             "Failed to open file: {0}/partition-graph-{1}.dot\nReturning "
-            "initial partitions.\nno matching architecture bitcode file",
+            "initial partitions.\n",
             clMemoryAwarePartitioningIODir, partitionIndex));
   }
 
@@ -331,16 +331,42 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
   };
   DenseMap<uint64_t, PartitionData> partitionData;
 
+  std::vector<uint64_t> topSortPositions(partitionInfo.size());
+  for (unsigned i = 0; i < topSortPositions.size(); ++i) {
+    topSortPositions[topSort[i]] = i;
+  }
+
   // Single pass for grouping and finding minimums
   for (unsigned i = 0; i < partitionInfo.size(); i++) {
     if (auto op = opMap.lookup(i)) {
       uint64_t partId = partitionInfo[i];
-      uint64_t topSortPos = topSort[i];
+      uint64_t topSortPos = topSortPositions[i];
       auto &data = partitionData[partId];
       data.ops.push_back({op, topSortPos});
       data.minTopSort = std::min(data.minTopSort, topSortPos);
     }
   }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "Partition Data:\n";
+    llvm::dbgs() << "==============\n\n";
+
+    for (const auto &entry : partitionData) {
+      uint64_t partId = entry.getFirst();
+      const auto &data = entry.getSecond();
+
+      llvm::dbgs() << "Partition " << partId << ":\n";
+      llvm::dbgs() << "  Minimum TopSort: " << data.minTopSort << "\n";
+      llvm::dbgs() << "  Operations (" << data.ops.size() << "):\n";
+
+      for (const auto &[op, topSortPos] : data.ops) {
+        llvm::dbgs() << "    [" << topSortPos << "] ";
+        op->dump();
+      }
+
+      llvm::dbgs() << "\n";
+    }
+  });
 
   // Create and sort partition list
   SmallVector<uint64_t> sortedPartitions;
@@ -420,6 +446,12 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       continue;
     }
 
+    LLVM_DEBUG({
+      llvm::dbgs() << "On partition:\n\n";
+      partition.dump(*asmState);
+      llvm::dbgs() << "\n\n";
+    });
+
     auto opMapPtr = partitionToDotGraph(partitionIndex, partition);
     if (!opMapPtr) {
       result.partitions.push_back(std::move(partition));
@@ -455,6 +487,11 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         llvm::dbgs() << "Cut size: " << cutSize << "\nImbalance: " << imbalance
                      << "\n";
         clMemoryAwarePartitioningConfig.print();
+        for (int node = 0; node < partitionInfo.size(); node++) {
+          llvm::dbgs() << "Node " << node << "\nOp: ";
+          opMap[node]->dump();
+          llvm::dbgs() << "In partition " << partitionInfo[node] << "\n\n\n";
+        }
       });
 
       SmallVector<Partition> partitions = createPartitions(
