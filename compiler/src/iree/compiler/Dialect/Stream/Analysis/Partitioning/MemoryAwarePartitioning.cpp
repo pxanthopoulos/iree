@@ -191,16 +191,19 @@ static llvm::cl::opt<MemoryAwarePartitioningConfig, false,
         llvm::cl::init("1,HYB,20,0.9,BOTH,1.1,MIX,10"));
 
 static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
-  auto *rootOp = block->getParentOp();
-  while (auto parentOp = rootOp->getParentOp()) {
-    if (!isa<IREE::Stream::TimelineOpInterface>(parentOp) &&
-        parentOp->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+  LLVM_DEBUG({
+    auto *rootOp = block->getParentOp();
+    while (auto parentOp = rootOp->getParentOp()) {
+      if (!isa<IREE::Stream::TimelineOpInterface>(parentOp) &&
+          parentOp->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+        rootOp = parentOp;
+        break;
+      }
       rootOp = parentOp;
-      break;
     }
-    rootOp = parentOp;
-  }
-  return std::make_unique<AsmState>(rootOp);
+    return std::make_unique<AsmState>(rootOp);
+  });
+  return nullptr;
 }
 
 bool checkSomeDispatches(Partition partition) {
@@ -321,10 +324,11 @@ uint64_t calculateMaxPartSize(const std::vector<uint64_t> &partitionInfo,
 SmallVector<SetVector<Operation *>>
 createOpGroups(const std::vector<uint64_t> &partitionInfo,
                const DenseMap<unsigned, Operation *> &opMap,
-               const std::vector<uint64_t> &topSort) {
+               const std::vector<uint64_t> &topSort,
+               const std::vector<uint64_t> &groupedTopSortPositions) {
   struct PartitionData {
     SmallVector<std::pair<Operation *, uint64_t>> ops;
-    uint64_t maxTopSort = 0;
+    uint64_t groupedTopSortPosition = 0;
   };
   DenseMap<uint64_t, PartitionData> partitionData;
 
@@ -336,10 +340,9 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
   for (unsigned i = 0; i < partitionInfo.size(); i++) {
     if (auto op = opMap.lookup(i)) {
       uint64_t partId = partitionInfo[i];
-      uint64_t topSortPos = topSortPositions[i];
       auto &data = partitionData[partId];
-      data.ops.push_back({op, topSortPos});
-      data.maxTopSort = std::max(data.maxTopSort, topSortPos);
+      data.ops.push_back({op, topSortPositions[i]});
+      data.groupedTopSortPosition = groupedTopSortPositions[i];
     }
   }
 
@@ -348,7 +351,8 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
     sortedPartitions.push_back(entry.first);
 
   llvm::sort(sortedPartitions, [&](uint64_t a, uint64_t b) {
-    return partitionData[a].maxTopSort < partitionData[b].maxTopSort;
+    return partitionData[a].groupedTopSortPosition <
+           partitionData[b].groupedTopSortPosition;
   });
 
   SmallVector<SetVector<Operation *>> result;
@@ -379,7 +383,8 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
       const auto &data = partitionData[partId];
 
       llvm::dbgs() << "Partition " << partId << ":\n";
-      llvm::dbgs() << "  Maxiumum TopSort: " << data.maxTopSort << "\n";
+      llvm::dbgs() << "  Grouped TopSort position: "
+                   << data.groupedTopSortPosition << "\n";
       llvm::dbgs() << "  Operations (" << data.ops.size() << "):\n";
 
       for (const auto &[op, topSortPos] : data.ops) {
@@ -399,8 +404,10 @@ SmallVector<Partition>
 createPartitions(const std::vector<uint64_t> &partitionInfo,
                  const DenseMap<unsigned, Operation *> &opMap,
                  const std::vector<uint64_t> &topSort,
+                 const std::vector<uint64_t> &groupedTopSortPositions,
                  IREE::Stream::AffinityAttr affinity) {
-  auto opGroups = createOpGroups(partitionInfo, opMap, topSort);
+  auto opGroups =
+      createOpGroups(partitionInfo, opMap, topSort, groupedTopSortPositions);
   SmallVector<Partition> result;
 
   for (auto &opGroup : opGroups) {
@@ -496,29 +503,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       });
 
       SmallVector<Partition> partitions = createPartitions(
-          partitionInfo, opMap, graph.topologicalSort(), partition.affinity);
-      LLVM_DEBUG(
-          {
-            SetVector<Value> declaredBelow;
-            for (auto &partition : llvm::reverse(partitions)) {
-              for (auto in : partition.ins) {
-                if (declaredBelow.contains(in)) {
-
-                  llvm::dbgs()
-                      << "Following value is captured but declared below:\n";
-                  in.printAsOperand(llvm::dbgs(), *asmState);
-                  llvm::dbgs() << "\n";
-                  in.print(llvm::dbgs(), *asmState);
-                  llvm::dbgs() << "\n";
-                  in.dump();
-                  llvm::dbgs() << "\n\n";
-                }
-              }
-              for (auto out : partition.outs) {
-                declaredBelow.insert(out);
-              }
-            }
-          });
+          partitionInfo, opMap, graph.topologicalSort(),
+          graph.groupedTopSortPositions(partitionInfo), partition.affinity);
 
       for (auto &partition : partitions)
         result.partitions.push_back(std::move(partition));
