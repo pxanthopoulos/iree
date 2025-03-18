@@ -318,16 +318,13 @@ uint64_t calculateMaxPartSize(const std::vector<uint64_t> &partitionInfo,
   return *std::max_element(partSizes.begin(), partSizes.end());
 }
 
-// Returns op groups, topologically sorted with ops inside them topologically
-// sorted as well based on partitionInfo
 SmallVector<SetVector<Operation *>>
 createOpGroups(const std::vector<uint64_t> &partitionInfo,
-               DenseMap<unsigned, Operation *> opMap,
+               const DenseMap<unsigned, Operation *> &opMap,
                const std::vector<uint64_t> &topSort) {
-  // Combined structure for partition data
   struct PartitionData {
     SmallVector<std::pair<Operation *, uint64_t>> ops;
-    uint64_t minTopSort = UINT64_MAX;
+    uint64_t maxTopSort = 0;
   };
   DenseMap<uint64_t, PartitionData> partitionData;
 
@@ -336,48 +333,24 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
     topSortPositions[topSort[i]] = i;
   }
 
-  // Single pass for grouping and finding minimums
   for (unsigned i = 0; i < partitionInfo.size(); i++) {
     if (auto op = opMap.lookup(i)) {
       uint64_t partId = partitionInfo[i];
       uint64_t topSortPos = topSortPositions[i];
       auto &data = partitionData[partId];
       data.ops.push_back({op, topSortPos});
-      data.minTopSort = std::min(data.minTopSort, topSortPos);
+      data.maxTopSort = std::max(data.maxTopSort, topSortPos);
     }
   }
 
-  LLVM_DEBUG({
-    llvm::dbgs() << "Partition Data:\n";
-    llvm::dbgs() << "==============\n\n";
-
-    for (const auto &entry : partitionData) {
-      uint64_t partId = entry.getFirst();
-      const auto &data = entry.getSecond();
-
-      llvm::dbgs() << "Partition " << partId << ":\n";
-      llvm::dbgs() << "  Minimum TopSort: " << data.minTopSort << "\n";
-      llvm::dbgs() << "  Operations (" << data.ops.size() << "):\n";
-
-      for (const auto &[op, topSortPos] : data.ops) {
-        llvm::dbgs() << "    [" << topSortPos << "] ";
-        op->dump();
-      }
-
-      llvm::dbgs() << "\n";
-    }
-  });
-
-  // Create and sort partition list
   SmallVector<uint64_t> sortedPartitions;
   for (const auto &entry : partitionData)
     sortedPartitions.push_back(entry.first);
 
   llvm::sort(sortedPartitions, [&](uint64_t a, uint64_t b) {
-    return partitionData[a].minTopSort < partitionData[b].minTopSort;
+    return partitionData[a].maxTopSort < partitionData[b].maxTopSort;
   });
 
-  // Create final result
   SmallVector<SetVector<Operation *>> result;
   for (uint64_t partitionId : sortedPartitions) {
     auto &ops = partitionData[partitionId].ops;
@@ -391,12 +364,40 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
     result.push_back(std::move(partitionOps));
   }
 
+  LLVM_DEBUG({
+    DenseMap<Operation *, unsigned> inverseOpMap;
+    for (const auto &pair : opMap) {
+      unsigned key = pair.first;
+      Operation *value = pair.second;
+      inverseOpMap[value] = key;
+    }
+
+    llvm::dbgs() << "Partition Data:\n";
+    llvm::dbgs() << "==============\n\n";
+
+    for (uint64_t partId : sortedPartitions) {
+      const auto &data = partitionData[partId];
+
+      llvm::dbgs() << "Partition " << partId << ":\n";
+      llvm::dbgs() << "  Maxiumum TopSort: " << data.maxTopSort << "\n";
+      llvm::dbgs() << "  Operations (" << data.ops.size() << "):\n";
+
+      for (const auto &[op, topSortPos] : data.ops) {
+        llvm::dbgs() << "    [" << inverseOpMap[op] << "][" << topSortPos
+                     << "] ";
+        op->dump();
+      }
+
+      llvm::dbgs() << "\n";
+    }
+  });
+
   return result;
 }
 
 SmallVector<Partition>
 createPartitions(const std::vector<uint64_t> &partitionInfo,
-                 DenseMap<unsigned, Operation *> opMap,
+                 const DenseMap<unsigned, Operation *> &opMap,
                  const std::vector<uint64_t> &topSort,
                  IREE::Stream::AffinityAttr affinity) {
   auto opGroups = createOpGroups(partitionInfo, opMap, topSort);
@@ -496,6 +497,29 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
 
       SmallVector<Partition> partitions = createPartitions(
           partitionInfo, opMap, graph.topologicalSort(), partition.affinity);
+      LLVM_DEBUG(
+          {
+            SetVector<Value> declaredBelow;
+            for (auto &partition : llvm::reverse(partitions)) {
+              for (auto in : partition.ins) {
+                if (declaredBelow.contains(in)) {
+
+                  llvm::dbgs()
+                      << "Following value is captured but declared below:\n";
+                  in.printAsOperand(llvm::dbgs(), *asmState);
+                  llvm::dbgs() << "\n";
+                  in.print(llvm::dbgs(), *asmState);
+                  llvm::dbgs() << "\n";
+                  in.dump();
+                  llvm::dbgs() << "\n\n";
+                }
+              }
+              for (auto out : partition.outs) {
+                declaredBelow.insert(out);
+              }
+            }
+          });
+
       for (auto &partition : partitions)
         result.partitions.push_back(std::move(partition));
     }
