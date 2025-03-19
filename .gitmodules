@@ -40,3 +40,16 @@
 [submodule "third_party/hsa-runtime-headers"]
 	path = third_party/hsa-runtime-headers
 	url = https://github.com/iree-org/hsa-runtime-headers.git
+[submodule "third_party/scotch"]
+	path = third_party/scotch
+	url = https://gitlab.inria.fr/scotch/scotch.git
+[submodule "third_party/gklib"]
+	path = third_party/gklib
+	url = https://github.com/KarypisLab/GKlib.git
+[submodule "third_party/metis"]
+	path = third_party/metis
+	url = https://github.com/KarypisLab/METIS.git
+[submodule "third_party/dag-partitioning"]
+	path = third_party/dag-partitioning
+	url = https://github.com/pxanthopoulos/dag-partitioning.git
+	branch = main

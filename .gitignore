@@ -101,4 +101,6 @@ artifacts/
 *.rej
 
 iree-build/
+.idea/
 workspace/
+pyenv/
