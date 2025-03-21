@@ -52,7 +52,6 @@ struct MemoryAwarePartitioningFeedbackLoopPass
 
       if (firstPass) {
         scheduleExecutionPassOptions.enableMemoryAwarePartitioning = false;
-        firstPass = false;
       } else {
         scheduleExecutionPassOptions.enableMemoryAwarePartitioning = true;
       }
@@ -65,6 +64,10 @@ struct MemoryAwarePartitioningFeedbackLoopPass
           })
           // Group concurrently executable work into waves.
           .addPass(IREE::Stream::createScheduleConcurrencyPass);
+
+      if (firstPass) {
+        passManager.addPass(IREE::Stream::createAnalyzeExecutionRegionsPass());
+      }
 
       // When synchronous initialization is requested we need to separate any
       // work behind a timepoint in the initializer from the consumers of that
@@ -117,6 +120,9 @@ struct MemoryAwarePartitioningFeedbackLoopPass
       }
       if (!clEnableMemoryAwarePartitioning) {
         break;
+      }
+      if (firstPass) {
+        firstPass = false;
       }
       break;
     }
