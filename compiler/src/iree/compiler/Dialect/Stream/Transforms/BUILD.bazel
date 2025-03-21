@@ -20,6 +20,7 @@ package(
 iree_compiler_cc_library(
     name = "Transforms",
     srcs = [
+        "AnalyzeExecutionRegions.cpp",
         "AnnotateAffinities.cpp",
         "AnnotateDispatchArguments.cpp",
         "AnnotateDispatchAssumptions.cpp",
