@@ -256,6 +256,42 @@ def RefineUsagePass :
 // Stream formation and scheduling
 //===----------------------------------------------------------------------===//
 
+def MemoryAwarePartitioningFeedbackLoopPass :
+    Pass<"iree-stream-memory-aware-partitioning-feedback-loop", "mlir::ModuleOp"> {
+  let summary = "TBD";
+  let description = [{
+    TBD
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "IREE::Stream::StreamDialect",
+  ];
+  let options = [
+      Option<
+        "initializationMode", "initialization-mode", 
+        "IREE::Stream::InitializationMode", 
+        /*default=*/"IREE::Stream::InitializationMode::Synchronous",
+        "Specifies the initialization mode for parameters and globals."
+      >,
+      Option<
+        "optimizeBindings", "optimize-bindings", 
+        "bool", 
+        /*default=*/"true",
+        "Enables binding fusion and dispatch site specialization."
+      >,
+      Option<"dumpStatisticsFormat", "dump-statistics-format", 
+        "IREE::Stream::DumpOutputFormat", 
+        /*default=*/"IREE::Stream::DumpOutputFormat::None",
+        "Dumps statistics in the specified output format."
+      >,
+      Option<"dumpStatisticsFile", "dump-statistics-file", 
+        "std::string", 
+        /*default=*/"",
+        "File path to write to; or `` for stderr or `-` for stdout."
+      >,
+    ];
+}
+
 def ScheduleExecutionPass :
     InterfacePass<"iree-stream-schedule-execution", "mlir::CallableOpInterface"> {
   let summary = "Identifies and groups asynchronous operations into executable regions within function-like regions.";

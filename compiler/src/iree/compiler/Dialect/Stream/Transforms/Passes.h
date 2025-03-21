@@ -86,12 +86,13 @@ struct TransformOptions : public PassPipelineOptions<TransformOptions> {
       llvm::cl::desc("Dumps statistics in the specified output format."),
       llvm::cl::init(DumpOutputFormat::None),
       llvm::cl::values(
-          clEnumValN(IREE::Stream::DumpOutputFormat::Pretty, "pretty",
+          clEnumValN(DumpOutputFormat::None, "none", "No format."),
+          clEnumValN(DumpOutputFormat::Pretty, "pretty",
                      "Human-readable pretty printed output."),
-          clEnumValN(IREE::Stream::DumpOutputFormat::Verbose, "verbose",
+          clEnumValN(DumpOutputFormat::Verbose, "verbose",
                      "Pretty printed output with additional IR."),
-          clEnumValN(IREE::Stream::DumpOutputFormat::CSV, "csv",
-                     "Comma separated values.")),
+          clEnumValN(DumpOutputFormat::CSV, "csv", "Comma separated values."),
+          clEnumValN(DumpOutputFormat::JSON, "json", "JSON formatted.")),
   };
   Option<std::string> dumpStatisticsFile{
       *this,
@@ -133,6 +134,9 @@ void buildStreamCmdPassPipeline(OpPassManager &passManager,
 // Optimizes stream commands (mostly optional).
 void buildStreamOptimizationPassPipeline(
     OpPassManager &passManager, const TransformOptions &transformOptions);
+
+void buildStreamCleanupPassPipeline(OpPassManager &passManager,
+                                    const TransformOptions &transformOptions);
 
 //===----------------------------------------------------------------------===//
 // Register all Passes
