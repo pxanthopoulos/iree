@@ -16,6 +16,7 @@ iree_cc_library(
   HDRS
     "Passes.h"
   SRCS
+    "AnalyzeExecutionRegions.cpp"
     "AnnotateAffinities.cpp"
     "AnnotateDispatchArguments.cpp"
     "AnnotateDispatchAssumptions.cpp"
