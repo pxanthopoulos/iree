@@ -317,6 +317,22 @@ def ScheduleConcurrencyPass :
   ];
 }
 
+def AnalyzeExecutionRegionsPass :
+    Pass<"iree-stream-analyze-execution-regions", "mlir::ModuleOp"> {
+  let summary = "Analyzes initial execution regions and gathers info about them.";
+  let description = [{
+    Visits each execution region and counts the number of ops inside them.
+    Then, it creates a string attribute with initial partition number (1) for each
+    along with the maximum number of partitions.
+
+    So, if we have 3 execution regions with 10, 20 and 30 ops respectively, the attribute
+    will be "1:10,1:20,1:30"
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
 def SyncInitializersPass :
     Pass<"iree-stream-sync-initializers", "mlir::ModuleOp"> {
   let summary = "Makes all initializer-produced timepoints synchronously wait before proceeding.";
