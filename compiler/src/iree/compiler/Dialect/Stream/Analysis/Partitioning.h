@@ -104,7 +104,8 @@ struct PartitionSet {
 // non-streamable ops if it is safe to do so (such as std arithmetic). Not all
 // ops in the block will be covered by a partition.
 PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
-                                    Block *block);
+                                    Block *block,
+                                    bool enableMemoryAwarePartitioning);
 
 PartitionSet memoryAwarePartition(PartitionSet initialPartitions, Block *block);
 
