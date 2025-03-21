@@ -309,6 +309,14 @@ def ScheduleExecutionPass :
   let dependentDialects = [
     "IREE::Stream::StreamDialect",
   ];
+  let options = [
+    Option<
+      "enableMemoryAwarePartitioning", "enable-memory-aware-partitioning",
+      "bool",
+      /*default=*/"false",
+      "Flag for whether to enable memory aware partitioning."
+    >,
+  ];
 }
 
 def ScheduleConcurrencyPass :

@@ -7,7 +7,6 @@
 #include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/PatternMatch.h"
@@ -15,10 +14,6 @@
 #define DEBUG_TYPE "iree-stream-partitioning"
 
 namespace mlir::iree_compiler::IREE::Stream {
-
-static llvm::cl::opt<bool> clEnableMemoryAwarePartitioning(
-    "iree-stream-enable-memory-aware-partitioning",
-    llvm::cl::desc("Enable memory aware partitioning"), llvm::cl::init(false));
 
 #ifndef NDEBUG
 
@@ -172,10 +167,11 @@ void PartitionSet::topologicalSort() {
 }
 
 PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
-                                    Block *block) {
+                                    Block *block,
+                                    bool enableMemoryAwarePartitioning) {
   PartitionSet partitions = partitionStreamableOpsReference(config, block);
 
-  if (clEnableMemoryAwarePartitioning) {
+  if (enableMemoryAwarePartitioning) {
     return memoryAwarePartition(partitions, block);
   }
 

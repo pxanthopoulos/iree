@@ -7,6 +7,7 @@
 // #include "mlir/IR/Builders.h"
 // #include "mlir/IR/BuiltinOps.h"
 // #include "mlir/Pass/Pass.h"
+#include "llvm/Support/CommandLine.h"
 #include "mlir/Transforms/Passes.h"
 
 #define DEBUG_TYPE "iree-stream-memory-aware-partitioning-feedback-loop"
@@ -18,6 +19,10 @@ namespace mlir::iree_compiler::IREE::Stream {
 
 using FunctionLikeNest =
     MultiOpNest<func::FuncOp, IREE::Util::InitializerOp, IREE::Util::FuncOp>;
+
+static llvm::cl::opt<bool> clEnableMemoryAwarePartitioning(
+    "iree-stream-enable-memory-aware-partitioning",
+    llvm::cl::desc("Enable memory aware partitioning"), llvm::cl::init(false));
 
 namespace {
 
@@ -32,66 +37,88 @@ struct MemoryAwarePartitioningFeedbackLoopPass
     if (moduleOp.getBody()->empty())
       return;
 
-    OpPassManager passManager;
-    IREE::Stream::TransformOptions transformOptions;
-    transformOptions.initializationMode = initializationMode;
-    transformOptions.optimizeBindings = optimizeBindings;
-    transformOptions.dumpStatisticsFormat = dumpStatisticsFormat;
-    transformOptions.dumpStatisticsFile = dumpStatisticsFile;
+    bool firstPass = true;
 
-    FunctionLikeNest(passManager)
-        // Combine async work into execution regions.
-        .addPass(IREE::Stream::createScheduleExecutionPass)
-        // Group concurrently executable work into waves.
-        .addPass(IREE::Stream::createScheduleConcurrencyPass);
+    while (1) {
+      OpPassManager passManager;
 
-    // When synchronous initialization is requested we need to separate any work
-    // behind a timepoint in the initializer from the consumers of that
-    // timepoint.
-    if (transformOptions.initializationMode ==
-        IREE::Stream::InitializationMode::Synchronous) {
-      passManager.addPass(IREE::Stream::createSyncInitializersPass());
-    }
+      IREE::Stream::TransformOptions transformOptions;
+      transformOptions.initializationMode = initializationMode;
+      transformOptions.optimizeBindings = optimizeBindings;
+      transformOptions.dumpStatisticsFormat = dumpStatisticsFormat;
+      transformOptions.dumpStatisticsFile = dumpStatisticsFile;
 
-    // Materialize timepoints across the entire module. This simplifies
-    // scheduling of the timeline as we can shake the IR and see what timepoints
-    // we still have left.
-    passManager.addPass(IREE::Stream::createPropagateTimepointsPass());
+      ScheduleExecutionPassOptions scheduleExecutionPassOptions;
 
-    // Expand builtins to dispatches. This may introduce new executables.
-    // We do this after scheduling so that we preserve the semantics of the ops
-    // for partitioning/placement before turning them into opaque dispatches.
-    passManager.addPass(IREE::Stream::createMaterializeBuiltinsPass());
+      if (firstPass) {
+        scheduleExecutionPassOptions.enableMemoryAwarePartitioning = false;
+        firstPass = false;
+      } else {
+        scheduleExecutionPassOptions.enableMemoryAwarePartitioning = true;
+      }
 
-    buildStreamCleanupPassPipeline(passManager, transformOptions);
+      FunctionLikeNest(passManager)
+          // Combine async work into execution regions.
+          .addPass([&]() {
+            return IREE::Stream::createScheduleExecutionPass(
+                scheduleExecutionPassOptions);
+          })
+          // Group concurrently executable work into waves.
+          .addPass(IREE::Stream::createScheduleConcurrencyPass);
 
-    // Everything must now be in stream.async.* form.
-    passManager.addPass(IREE::Stream::createVerifyLoweringToAsyncPass());
+      // When synchronous initialization is requested we need to separate any
+      // work behind a timepoint in the initializer from the consumers of that
+      // timepoint.
+      if (transformOptions.initializationMode ==
+          IREE::Stream::InitializationMode::Synchronous) {
+        passManager.addPass(IREE::Stream::createSyncInitializersPass());
+      }
 
-    // Schedule fine-grained allocations and insert placeholders for
-    // larger/longer lifetime allocations.
-    passManager.addPass(IREE::Stream::createScheduleAllocationPass());
-    FunctionLikeNest(passManager)
-        // TODO(benvanik): passes to convert alloc to alloca and thread through
-        // streams. Ideally all transient allocs become stream-ordered allocas.
-        // createPropagateTransientsPass()
+      // Materialize timepoints across the entire module. This simplifies
+      // scheduling of the timeline as we can shake the IR and see what
+      // timepoints we still have left.
+      passManager.addPass(IREE::Stream::createPropagateTimepointsPass());
 
-        // Allocate backing storage for fused constant resources.
-        // This expands packed constants into explicit forms with partitioned
-        // storage buffers and upload logic.
-        .addPass(IREE::Stream::createPackConstantsPass)
+      // Expand builtins to dispatches. This may introduce new executables.
+      // We do this after scheduling so that we preserve the semantics of the
+      // ops for partitioning/placement before turning them into opaque
+      // dispatches.
+      passManager.addPass(IREE::Stream::createMaterializeBuiltinsPass());
 
-        // Layout packed slices to emit the arithmetic required for all resource
-        // offsets. This enables us to propagate the subviews across the program
-        // below.
-        .addPass(IREE::Stream::createLayoutSlicesPass)
+      buildStreamCleanupPassPipeline(passManager, transformOptions);
 
-        // Apply canonicalization patterns to clean up subview ops prior to
-        // propagating subranges.
-        .addPass(mlir::createCanonicalizerPass);
+      // Everything must now be in stream.async.* form.
+      passManager.addPass(IREE::Stream::createVerifyLoweringToAsyncPass());
 
-    if (failed(runPipeline(passManager, moduleOp))) {
-      return signalPassFailure();
+      // Schedule fine-grained allocations and insert placeholders for
+      // larger/longer lifetime allocations.
+      passManager.addPass(IREE::Stream::createScheduleAllocationPass());
+      FunctionLikeNest(passManager)
+          // TODO(benvanik): passes to convert alloc to alloca and thread
+          // through streams. Ideally all transient allocs become stream-ordered
+          // allocas. createPropagateTransientsPass()
+
+          // Allocate backing storage for fused constant resources.
+          // This expands packed constants into explicit forms with partitioned
+          // storage buffers and upload logic.
+          .addPass(IREE::Stream::createPackConstantsPass)
+
+          // Layout packed slices to emit the arithmetic required for all
+          // resource offsets. This enables us to propagate the subviews across
+          // the program below.
+          .addPass(IREE::Stream::createLayoutSlicesPass)
+
+          // Apply canonicalization patterns to clean up subview ops prior to
+          // propagating subranges.
+          .addPass(mlir::createCanonicalizerPass);
+
+      if (failed(runPipeline(passManager, moduleOp))) {
+        return signalPassFailure();
+      }
+      if (!clEnableMemoryAwarePartitioning) {
+        break;
+      }
+      break;
     }
   }
 };
