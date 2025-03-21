@@ -34,6 +34,7 @@ iree_cc_library(
     "MaterializeBuiltins.cpp"
     "MaterializeCopyOnWrite.cpp"
     "MaterializeEncodings.cpp"
+    "MemoryAwarePartitioningFeedbackLoop.cpp"
     "PackConstants.cpp"
     "PackDispatchOperands.cpp"
     "Passes.cpp"
