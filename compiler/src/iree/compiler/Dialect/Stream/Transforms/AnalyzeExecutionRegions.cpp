@@ -31,7 +31,8 @@ struct AnalyzeExecutionRegionsPass
     bool twoDispatches = false;
     if (executeOp->getRegions().size() > 0) {
       executeOp->walk([&](Operation *nestedOp) {
-        if (nestedOp != executeOp) {
+        if (nestedOp != executeOp &&
+            isa<IREE::Stream::StreamableOpInterface>(nestedOp)) {
           opCount++;
         }
         if (!twoDispatches) {
