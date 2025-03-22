@@ -14,7 +14,7 @@ namespace {
 struct AnalyzeExecutionRegionsPass
     : public IREE::Stream::impl::AnalyzeExecutionRegionsPassBase<
           AnalyzeExecutionRegionsPass> {
-  static void analyze(Operation *executeOp,
+  static void analyze(IREE::Stream::AsyncExecuteOp *executeOp,
                       llvm::SmallVector<uint64_t> &maxPartitionValues) {
     uint64_t opCount = 0;
     bool oneDispatch = false;
