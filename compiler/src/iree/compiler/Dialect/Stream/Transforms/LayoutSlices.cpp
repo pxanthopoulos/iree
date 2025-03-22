@@ -274,6 +274,22 @@ struct LayoutSlicesPass
             packOp, offset, dynamicSlices, resourceConfig, indexSet, builder);
       }
 
+      for (auto op : packOp.getTotalLength().getUsers()) {
+        if (llvm::dyn_cast<IREE::Stream::CmdExecuteOp>(op)) {
+          auto value = offset.getDefiningOp()->getAttr("value");
+          if (value) {
+            op->setAttr("iree.stream.partitioning.size", value);
+            break;
+          } else {
+            LLVM_DEBUG(llvm::dbgs() << "Size of transient slab is dynamic, "
+                                       "setting dummy value of 40");
+            auto dummyValue = builder.getIndexAttr(40);
+            op->setAttr("iree.stream.partitioning.size", dummyValue);
+            break;
+          }
+        }
+      }
+
       // Total packed length is the current offset after all slices are
       // allocated. This should be aligned to the range constraints.
       packOp.getTotalLength().replaceAllUsesWith(offset);
