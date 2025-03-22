@@ -111,6 +111,11 @@ struct ExecutePartitionBuilder {
     if (partition->affinity) {
       executeOp.setAffinityAttr(partition->affinity);
     }
+    if (partition->predecessorPartition != -1) {
+      auto value =
+          parentBuilder.getI32IntegerAttr(partition->predecessorPartition);
+      executeOp->setAttr("iree.stream.partitioning.predecessor", value);
+    }
 
     // Add entry block and arguments.
     auto &entryBlock = executeOp.getBody().emplaceBlock();
