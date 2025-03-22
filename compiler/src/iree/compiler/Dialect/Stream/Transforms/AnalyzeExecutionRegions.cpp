@@ -33,7 +33,6 @@ struct AnalyzeExecutionRegionsPass
       });
     }
     if (oneDispatch) {
-      LLVM_DEBUG(executeOp->dump());
       maxPartitionValues.push_back(opCount);
     }
   }
