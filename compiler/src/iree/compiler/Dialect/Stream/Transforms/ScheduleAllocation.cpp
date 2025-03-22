@@ -1928,6 +1928,11 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp,
   if (executeOp.getAffinity().has_value()) {
     newExecuteOp.setAffinityAttr(executeOp.getAffinityAttr());
   }
+  if (executeOp->hasAttr("iree.stream.partitioning.predecessor")) {
+    newExecuteOp->setAttr(
+        "iree.stream.partitioning.predecessor",
+        executeOp->getAttr("iree.stream.partitioning.predecessor"));
+  }
   newExecuteOp.getBody().takeBody(executeOp.getBody());
   executeOp.getResultTimepoint().replaceAllUsesWith(
       newExecuteOp.getResultTimepoint());
