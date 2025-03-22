@@ -405,7 +405,7 @@ createPartitions(const std::vector<uint64_t> &partitionInfo,
                  const DenseMap<unsigned, Operation *> &opMap,
                  const std::vector<uint64_t> &topSort,
                  const std::vector<uint64_t> &groupedTopSortPositions,
-                 IREE::Stream::AffinityAttr affinity) {
+                 IREE::Stream::AffinityAttr affinity, int partitionIndex) {
   auto opGroups =
       createOpGroups(partitionInfo, opMap, topSort, groupedTopSortPositions);
   SmallVector<Partition> result;
@@ -436,6 +436,7 @@ createPartitions(const std::vector<uint64_t> &partitionInfo,
     partition.outs = escapingValues;
 
     partition.ops = std::move(opGroup);
+    partition.predecessorPartition = partitionIndex;
     result.push_back(std::move(partition));
   }
 
@@ -502,9 +503,10 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         }
       });
 
-      SmallVector<Partition> partitions = createPartitions(
-          partitionInfo, opMap, graph.topologicalSort(),
-          graph.groupedTopSortPositions(partitionInfo), partition.affinity);
+      SmallVector<Partition> partitions =
+          createPartitions(partitionInfo, opMap, graph.topologicalSort(),
+                           graph.groupedTopSortPositions(partitionInfo),
+                           partition.affinity, (int)partitionIndex);
 
       for (auto &partition : partitions)
         result.partitions.push_back(std::move(partition));
