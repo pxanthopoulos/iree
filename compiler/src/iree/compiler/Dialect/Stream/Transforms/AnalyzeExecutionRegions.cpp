@@ -97,11 +97,9 @@ struct AnalyzeExecutionRegionsPass
       }
 
       std::string attrStr = createAttributeString(info);
-      OpBuilder builder(callableOp);
-      callableOp->setAttr("iree.stream.partitioning.info",
-                          builder.getStringAttr(attrStr));
-
-      LLVM_DEBUG(callableOp.dump());
+      OpBuilder builder(moduleOp);
+      moduleOp->setAttr("iree.stream.partitioning.info",
+                        builder.getStringAttr(attrStr));
     }
   }
 };
