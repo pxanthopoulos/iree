@@ -18,25 +18,22 @@ struct AnalyzeExecutionRegionsPass
                       llvm::SmallVector<uint64_t> &maxPartitionValues) {
     uint64_t opCount = 0;
     bool oneDispatch = false;
-    bool twoDispatches = false;
     if (executeOp->getRegions().size() > 0) {
       executeOp->walk([&](Operation *nestedOp) {
         if (nestedOp != executeOp &&
             isa<IREE::Stream::StreamableOpInterface>(nestedOp)) {
           opCount++;
         }
-        if (!twoDispatches) {
+        if (!oneDispatch) {
           auto dispatchOp =
               llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(nestedOp);
-          if (dispatchOp && oneDispatch)
-            twoDispatches = true;
-          else if (dispatchOp) {
+          if (dispatchOp)
             oneDispatch = true;
-          }
         }
       });
     }
-    if (twoDispatches) {
+    if (oneDispatch) {
+      LLVM_DEBUG(executeOp->dump());
       maxPartitionValues.push_back(opCount);
     }
   }
@@ -61,6 +58,8 @@ struct AnalyzeExecutionRegionsPass
     if (moduleOp.getBody()->empty())
       return;
 
+    llvm::SmallVector<uint64_t> info;
+
     for (auto &parentOp : llvm::make_early_inc_range(moduleOp.getOps())) {
       if (auto asyncFuncOp = dyn_cast<IREE::Stream::AsyncFuncOp>(parentOp)) {
         continue;
@@ -74,23 +73,22 @@ struct AnalyzeExecutionRegionsPass
       llvm::SmallVector<Operation *> operations;
       callableOp.walk([&](Operation *op) { operations.push_back(op); });
 
-      llvm::SmallVector<uint64_t> info;
       for (auto op : operations) {
         auto executeOp = llvm::dyn_cast<IREE::Stream::AsyncExecuteOp>(op);
         if (executeOp) {
           analyze(executeOp, info);
         }
       }
-
-      if (info.empty()) {
-        continue;
-      }
-
-      std::string attrStr = createAttributeString(info);
-      OpBuilder builder(moduleOp);
-      moduleOp->setAttr("iree.stream.partitioning.info",
-                        builder.getStringAttr(attrStr));
     }
+
+    if (info.empty()) {
+      return;
+    }
+
+    std::string attrStr = createAttributeString(info);
+    OpBuilder builder(moduleOp);
+    moduleOp->setAttr("iree.stream.partitioning.info",
+                      builder.getStringAttr(attrStr));
   }
 };
 
