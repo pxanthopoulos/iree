@@ -1,16 +1,6 @@
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h"
 
-// #include "iree/compiler/Utils/PassUtils.h"
-// #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "llvm/Support/Debug.h"
-// #include "mlir/IR/Matchers.h"
-// #include "mlir/Dialect/Arith/IR/Arith.h"
-// #include "mlir/Dialect/Func/IR/FuncOps.h"
-// #include "mlir/IR/Builders.h"
-// #include "mlir/IR/BuiltinOps.h"
-// #include "mlir/Pass/Pass.h"
-// #include "llvm/Support/CommandLine.h"
-// #include "mlir/Transforms/Passes.h"
 
 #define DEBUG_TYPE "iree-stream-analyze-execution-regions"
 
