@@ -278,7 +278,10 @@ struct LayoutSlicesPass
         if (llvm::dyn_cast<IREE::Stream::CmdExecuteOp>(op)) {
           auto value = offset.getDefiningOp()->getAttr("value");
           if (value) {
-            op->setAttr("iree.stream.partitioning.size", value);
+            int64_t valueI64 =
+                llvm::dyn_cast_if_present<IntegerAttr>(value).getInt();
+            auto integerAttr = builder.getI64IntegerAttr(valueI64);
+            op->setAttr("iree.stream.partitioning.size", integerAttr);
             break;
           } else {
             LLVM_DEBUG(llvm::dbgs() << "Size of transient slab is dynamic, "
