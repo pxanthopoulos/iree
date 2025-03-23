@@ -23,6 +23,10 @@ void dumpPartition(Partition &partition, AsmState &asmState) {
     partition.affinity.dump();
     llvm::dbgs() << "\n";
   }
+  if (partition.predecessorPartition != -1) {
+    llvm::dbgs() << " PREDECESSOR PARTITION: " << partition.predecessorPartition
+                 << "\n";
+  }
   llvm::dbgs() << " INS:\n  ";
   llvm::interleaveComma(partition.ins, llvm::dbgs(), [&](Value in) {
     in.printAsOperand(llvm::dbgs(), asmState);
