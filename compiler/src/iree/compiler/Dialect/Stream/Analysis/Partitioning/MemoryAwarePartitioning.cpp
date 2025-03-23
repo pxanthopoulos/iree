@@ -10,7 +10,7 @@
 
 #include <fstream>
 
-#define DEBUG_TYPE "iree-stream-memory-aware-partitioning"
+#define DEBUG_TYPE "iree-stream-memory-aware-partitioning-partitioner"
 
 namespace mlir::iree_compiler::IREE::Stream {
 
