@@ -7,7 +7,6 @@
 // #include "mlir/IR/Builders.h"
 // #include "mlir/IR/BuiltinOps.h"
 // #include "mlir/Pass/Pass.h"
-#include "llvm/Support/CommandLine.h"
 #include "mlir/Transforms/Passes.h"
 
 #define DEBUG_TYPE "iree-stream-memory-aware-partitioning-feedback-loop"
@@ -19,10 +18,6 @@ namespace mlir::iree_compiler::IREE::Stream {
 
 using FunctionLikeNest =
     MultiOpNest<func::FuncOp, IREE::Util::InitializerOp, IREE::Util::FuncOp>;
-
-static llvm::cl::opt<bool> clEnableMemoryAwarePartitioning(
-    "iree-stream-enable-memory-aware-partitioning",
-    llvm::cl::desc("Enable memory aware partitioning"), llvm::cl::init(false));
 
 namespace {
 
@@ -170,16 +165,12 @@ struct MemoryAwarePartitioningFeedbackLoopPass
                "===================================================\n\n\n";
       });
 
-      // Early exit if memory-aware partitioning is disabled
-      if (!clEnableMemoryAwarePartitioning) {
-        break;
-      }
-
       // Update flag
       if (firstPass) {
         firstPass = false;
       }
 
+      // If memory limit is not breached, break the loop
       if (auto partitioningInfoAttr = moduleOp->getAttrOfType<StringAttr>(
               "iree.stream.partitioning.info")) {
         if (partitioningInfoAttr.getValue() == "pass") {
