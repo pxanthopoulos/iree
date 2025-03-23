@@ -79,7 +79,7 @@ struct CheckPartitionMemoryLimitPass
         moduleOp->getAttrOfType<StringAttr>("iree.stream.partitioning.info");
     if (!partitioningInfoAttr) {
       LLVM_DEBUG(llvm::dbgs() << "No partitioning info attribute found\n");
-      return;
+      return signalPassFailure();
     }
 
     llvm::StringRef partitioningInfoStr = partitioningInfoAttr.getValue();
