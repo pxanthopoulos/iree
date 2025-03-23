@@ -22,6 +22,10 @@ static llvm::cl::opt<bool> clAnnotateInputAffinities(
                    "the pipeline for debugging."),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> clEnableMemoryAwarePartitioning(
+    "iree-stream-enable-memory-aware-partitioning",
+    llvm::cl::desc("Enable memory aware partitioning"), llvm::cl::init(false));
+
 namespace mlir::iree_compiler::IREE::Stream {
 
 using FunctionLikeNest =
@@ -206,20 +210,80 @@ void buildStreamAsyncPassPipeline(OpPassManager &passManager,
   // Stream formation and scheduling
   //----------------------------------------------------------------------------
 
-  MemoryAwarePartitioningFeedbackLoopPassOptions
-      memoryAwarePartitioningFeedbackLoopPassOptions;
-  memoryAwarePartitioningFeedbackLoopPassOptions.initializationMode =
-      transformOptions.initializationMode;
-  memoryAwarePartitioningFeedbackLoopPassOptions.optimizeBindings =
-      transformOptions.optimizeBindings;
-  memoryAwarePartitioningFeedbackLoopPassOptions.dumpStatisticsFormat =
-      transformOptions.dumpStatisticsFormat;
-  memoryAwarePartitioningFeedbackLoopPassOptions.dumpStatisticsFile =
-      transformOptions.dumpStatisticsFile;
+  if (clEnableMemoryAwarePartitioning) {
+    MemoryAwarePartitioningFeedbackLoopPassOptions
+        memoryAwarePartitioningFeedbackLoopPassOptions;
+    memoryAwarePartitioningFeedbackLoopPassOptions.initializationMode =
+        transformOptions.initializationMode;
+    memoryAwarePartitioningFeedbackLoopPassOptions.optimizeBindings =
+        transformOptions.optimizeBindings;
+    memoryAwarePartitioningFeedbackLoopPassOptions.dumpStatisticsFormat =
+        transformOptions.dumpStatisticsFormat;
+    memoryAwarePartitioningFeedbackLoopPassOptions.dumpStatisticsFile =
+        transformOptions.dumpStatisticsFile;
 
-  passManager.addPass(
-      IREE::Stream::createMemoryAwarePartitioningFeedbackLoopPass(
-          memoryAwarePartitioningFeedbackLoopPassOptions));
+    passManager.addPass(
+        IREE::Stream::createMemoryAwarePartitioningFeedbackLoopPass(
+            memoryAwarePartitioningFeedbackLoopPassOptions));
+  } else {
+    ScheduleExecutionPassOptions scheduleExecutionPassOptions;
+    scheduleExecutionPassOptions.enableMemoryAwarePartitioning = false;
+
+    FunctionLikeNest(passManager)
+        // Combine async work into execution regions.
+        .addPass([&]() {
+          return IREE::Stream::createScheduleExecutionPass(
+              scheduleExecutionPassOptions);
+        })
+        // Group concurrently executable work into waves.
+        .addPass(IREE::Stream::createScheduleConcurrencyPass);
+
+    // When synchronous initialization is requested we need to separate any
+    // work behind a timepoint in the initializer from the consumers of that
+    // timepoint.
+    if (transformOptions.initializationMode ==
+        IREE::Stream::InitializationMode::Synchronous) {
+      passManager.addPass(IREE::Stream::createSyncInitializersPass());
+    }
+
+    // Materialize timepoints across the entire module. This simplifies
+    // scheduling of the timeline as we can shake the IR and see what
+    // timepoints we still have left.
+    passManager.addPass(IREE::Stream::createPropagateTimepointsPass());
+
+    // Expand builtins to dispatches. This may introduce new executables.
+    // We do this after scheduling so that we preserve the semantics of the
+    // ops for partitioning/placement before turning them into opaque
+    // dispatches.
+    passManager.addPass(IREE::Stream::createMaterializeBuiltinsPass());
+
+    buildStreamCleanupPassPipeline(passManager, transformOptions);
+
+    // Everything must now be in stream.async.* form.
+    passManager.addPass(IREE::Stream::createVerifyLoweringToAsyncPass());
+
+    // Schedule fine-grained allocations and insert placeholders for
+    // larger/longer lifetime allocations.
+    passManager.addPass(IREE::Stream::createScheduleAllocationPass());
+    FunctionLikeNest(passManager)
+        // TODO(benvanik): passes to convert alloc to alloca and thread
+        // through streams. Ideally all transient allocs become stream-ordered
+        // allocas. createPropagateTransientsPass()
+
+        // Allocate backing storage for fused constant resources.
+        // This expands packed constants into explicit forms with partitioned
+        // storage buffers and upload logic.
+        .addPass(IREE::Stream::createPackConstantsPass)
+
+        // Layout packed slices to emit the arithmetic required for all
+        // resource offsets. This enables us to propagate the subviews across
+        // the program below.
+        .addPass(IREE::Stream::createLayoutSlicesPass)
+
+        // Apply canonicalization patterns to clean up subview ops prior to
+        // propagating subranges.
+        .addPass(mlir::createCanonicalizerPass);
+  }
 }
 
 //===----------------------------------------------------------------------===//
