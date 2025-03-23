@@ -283,7 +283,7 @@ struct LayoutSlicesPass
           } else {
             LLVM_DEBUG(llvm::dbgs() << "Size of transient slab is dynamic, "
                                        "setting dummy value of 40");
-            auto dummyValue = builder.getIndexAttr(40);
+            auto dummyValue = builder.getI64IntegerAttr(40);
             op->setAttr("iree.stream.partitioning.size", dummyValue);
             break;
           }

@@ -41,7 +41,7 @@ struct Partition {
   // partition.
   // Initial value indicates partition comes from Reference partitioning
   // and is an original one.
-  int predecessorPartition = -1;
+  int64_t predecessorPartition = -1;
 
   void dump(AsmState &asmState);
 

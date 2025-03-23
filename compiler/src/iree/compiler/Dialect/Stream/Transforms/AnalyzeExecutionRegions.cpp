@@ -15,8 +15,8 @@ struct AnalyzeExecutionRegionsPass
     : public IREE::Stream::impl::AnalyzeExecutionRegionsPassBase<
           AnalyzeExecutionRegionsPass> {
   static void analyze(Operation *executeOp,
-                      llvm::SmallVector<uint64_t> &maxPartitionValues) {
-    uint64_t opCount = 0;
+                      llvm::SmallVector<int64_t> &maxPartitionValues) {
+    int64_t opCount = 0;
     bool oneDispatch = false;
     if (executeOp->getRegions().size() > 0) {
       executeOp->walk([&](Operation *nestedOp) {
@@ -38,7 +38,7 @@ struct AnalyzeExecutionRegionsPass
   }
 
   static std::string
-  createAttributeString(const llvm::SmallVector<uint64_t> &values) {
+  createAttributeString(const llvm::SmallVector<int64_t> &values) {
     std::string result;
     llvm::raw_string_ostream os(result);
 
@@ -57,7 +57,7 @@ struct AnalyzeExecutionRegionsPass
     if (moduleOp.getBody()->empty())
       return;
 
-    llvm::SmallVector<uint64_t> info;
+    llvm::SmallVector<int64_t> info;
 
     for (auto &parentOp : llvm::make_early_inc_range(moduleOp.getOps())) {
       if (auto asyncFuncOp = dyn_cast<IREE::Stream::AsyncFuncOp>(parentOp)) {
