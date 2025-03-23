@@ -20,7 +20,6 @@ static llvm::cl::opt<std::string> clMemoryAwarePartitioningIODir(
     llvm::cl::init("."));
 
 struct MemoryAwarePartitioningConfig {
-  uint64_t numPartitions;
   ClusteringMethod clusteringMethod;
   uint64_t maxClusteringLevel;
   double minClusteringVertexRatio;
@@ -29,9 +28,7 @@ struct MemoryAwarePartitioningConfig {
   RefinementMethod refinementMethod;
   uint64_t maxRefinementPasses;
 
-  MemoryAwarePartitioningConfig(
-      const char *V = "1,HYB,20,0.9,BOTH,1.1,MIX,10") {
-    numPartitions = 1;
+  MemoryAwarePartitioningConfig(const char *V = "HYB,20,0.9,BOTH,1.1,MIX,10") {
     clusteringMethod = ClusteringMethod::HYB;
     maxClusteringLevel = 20;
     minClusteringVertexRatio = 0.9;
@@ -44,7 +41,6 @@ struct MemoryAwarePartitioningConfig {
   void print() const {
     LLVM_DEBUG({
       llvm::dbgs() << "Memory-Aware Partitioning Configuration:\n"
-                   << "  Number of Partitions: " << numPartitions << "\n"
                    << "  Clustering Method: ";
 
       switch (clusteringMethod) {
@@ -106,40 +102,37 @@ struct MemoryAwarePartitioningConfigParser
 
   bool parse(llvm::cl::Option &O, StringRef ArgName, StringRef Arg,
              MemoryAwarePartitioningConfig &V) {
-    SmallVector<StringRef, 8> Parts;
+    SmallVector<StringRef> Parts;
     Arg.split(Parts, ',');
 
-    if (Parts.size() != 8)
-      return O.error("expected 8 comma-separated values");
+    if (Parts.size() != 7)
+      return O.error("expected 7 comma-separated values");
 
-    if (Parts[0].getAsInteger(10, V.numPartitions))
-      return O.error("invalid number of partitions");
-
-    if (Parts[1].compare("FORB") == 0) {
+    if (Parts[0].compare("FORB") == 0) {
       V.clusteringMethod = ClusteringMethod::FORB;
-    } else if (Parts[1].compare("CYC") == 0) {
+    } else if (Parts[0].compare("CYC") == 0) {
       V.clusteringMethod = ClusteringMethod::CYC;
-    } else if (Parts[1].compare("HYB") == 0) {
+    } else if (Parts[0].compare("HYB") == 0) {
       V.clusteringMethod = ClusteringMethod::HYB;
     } else {
       return O.error("invalid clustering method (expected: FORB|CYC|HYB)");
     }
 
-    if (Parts[2].getAsInteger(10, V.maxClusteringLevel))
+    if (Parts[1].getAsInteger(10, V.maxClusteringLevel))
       return O.error("invalid clustering level");
 
     double Ratio;
-    if (Parts[3].getAsDouble(Ratio) || Ratio <= 0.0 || Ratio >= 1.0)
+    if (Parts[2].getAsDouble(Ratio) || Ratio <= 0.0 || Ratio >= 1.0)
       return O.error("clustering ratio must be between 0 and 1");
     V.minClusteringVertexRatio = Ratio;
 
-    if (Parts[4].compare("GGG") == 0) {
+    if (Parts[3].compare("GGG") == 0) {
       V.bisectionMethod = BisectionMethod::GGG;
-    } else if (Parts[4].compare("SCOTCH") == 0) {
+    } else if (Parts[3].compare("SCOTCH") == 0) {
       V.bisectionMethod = BisectionMethod::UNDIRSCOTCH;
-    } else if (Parts[4].compare("METIS") == 0) {
+    } else if (Parts[3].compare("METIS") == 0) {
       V.bisectionMethod = BisectionMethod::UNDIRMETIS;
-    } else if (Parts[4].compare("BOTH") == 0) {
+    } else if (Parts[3].compare("BOTH") == 0) {
       V.bisectionMethod = BisectionMethod::UNDIRBOTH;
     } else {
       return O.error(
@@ -147,21 +140,21 @@ struct MemoryAwarePartitioningConfigParser
     }
 
     double Imbalance;
-    if (Parts[5].getAsDouble(Imbalance) || Imbalance <= 1.0)
+    if (Parts[4].getAsDouble(Imbalance) || Imbalance <= 1.0)
       return O.error("imbalance must be greater than 1");
     V.maxImbalance = Imbalance;
 
-    if (Parts[6].compare("FM") == 0) {
+    if (Parts[5].compare("FM") == 0) {
       V.refinementMethod = RefinementMethod::BOUNDARYFM;
-    } else if (Parts[6].compare("KL") == 0) {
+    } else if (Parts[5].compare("KL") == 0) {
       V.refinementMethod = RefinementMethod::BOUNDARYKL;
-    } else if (Parts[6].compare("MIX") == 0) {
+    } else if (Parts[5].compare("MIX") == 0) {
       V.refinementMethod = RefinementMethod::MIXED;
     } else {
       return O.error("invalid refinement method (expected: FM|KL|MIX)");
     }
 
-    if (Parts[7].getAsInteger(10, V.maxRefinementPasses))
+    if (Parts[6].getAsInteger(10, V.maxRefinementPasses))
       return O.error("invalid refinement passes");
 
     return false;
@@ -173,22 +166,21 @@ static llvm::cl::opt<MemoryAwarePartitioningConfig, false,
     clMemoryAwarePartitioningConfig(
         "iree-stream-memory-aware-partitioning-config",
         llvm::cl::desc(
-            "--iree-stream-memory-aware-partitioning-config=np,cm,cl,vr,bm,i,"
+            "--iree-stream-memory-aware-partitioning-config=cm,cl,vr,bm,i,"
             "rm,rp\n"
             "Comma-separated list of configuration variables for the "
             "partitioning phase:\n"
-            "  np = numberOfPartitions (int)\n"
             "  cm = clusteringMethod (FORB|CYC|HYB)\n"
             "  cl = maxClusteringLevel (int)\n"
-            "  vr = minClusteringVertexRatio (float, 0.0 < x < 1.0)\n"
+            "  vr = minClusteringVertexRatio (float, 0.0 < vr < 1.0)\n"
             "  bm = bisectionMethod (GGG|SCOTCH|METIS|BOTH)\n"
-            "  i  = maxImbalance (float, 1.0 < x)\n"
+            "  i  = maxImbalance (float, 1.0 < i)\n"
             "  rm = refinementMethod (FM|KL|MIX)\n"
             "  rp = maxRefinementPasses (int)\n"
             "Example: "
-            "--iree-stream-memory-aware-partitioning-config=1,HYB,20,0.9,BOTH,"
-            "1.1,MIX,10"),
-        llvm::cl::init("1,HYB,20,0.9,BOTH,1.1,MIX,10"));
+            "--iree-stream-memory-aware-partitioning-config=HYB,20,0.9,BOTH,1."
+            "1,MIX,10"),
+        llvm::cl::init("HYB,20,0.9,BOTH,1.1,MIX,10"));
 
 static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
   LLVM_DEBUG({
@@ -206,14 +198,59 @@ static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
   return nullptr;
 }
 
-bool checkSomeDispatches(Partition partition) {
-  bool oneDispatch = false;
+llvm::Expected<llvm::SmallVector<int64_t>>
+extractNumPartitionsFromAttr(Block *block) {
+  llvm::SmallVector<int64_t> result;
+
+  auto *rootOp = block->getParentOp();
+  while (auto parentOp = rootOp->getParentOp()) {
+    if (!isa<IREE::Stream::TimelineOpInterface>(parentOp) &&
+        parentOp->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      rootOp = parentOp;
+      break;
+    }
+    rootOp = parentOp;
+  }
+
+  auto partitioningInfoAttr =
+      rootOp->getAttrOfType<StringAttr>("iree.stream.partitioning.info");
+  if (!partitioningInfoAttr) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "No partitioning info attribute found\n");
+  }
+
+  llvm::StringRef partitioningInfoStr = partitioningInfoAttr.getValue();
+  llvm::SmallVector<llvm::StringRef> pairStrs;
+  partitioningInfoStr.split(pairStrs, ',');
+
+  for (auto pairStr : pairStrs) {
+    llvm::SmallVector<llvm::StringRef> nums;
+    pairStr.split(nums, ':');
+
+    if (nums.size() != 2) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          llvm::formatv("Invalid pair format: {0}\n", pairStr));
+    }
+
+    int64_t first, second;
+    if (nums[0].getAsInteger(10, first) || nums[1].getAsInteger(10, second)) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          llvm::formatv("Failed to parse integers: {0}\n", pairStr));
+    }
+
+    result.emplace_back(first);
+  }
+
+  return result;
+}
+
+bool checkOneDispatch(Partition partition) {
   for (const auto &op : partition.ops) {
     auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
-    if (dispatchOp && oneDispatch)
-      return true;
     if (dispatchOp)
-      oneDispatch = true;
+      return true;
   }
   return false;
 }
@@ -448,9 +485,22 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
   auto asmState = getRootAsmState(block);
   PartitionSet result;
 
-  for (const auto &[partitionIndex, partition] :
-       llvm::enumerate(initialPartitions.partitions)) {
-    if (!checkSomeDispatches(partition)) {
+  llvm::SmallVector<int64_t> numPartitionsFromAttr;
+  auto numPartitionsFromAttrPtr = extractNumPartitionsFromAttr(block);
+  if (numPartitionsFromAttrPtr) {
+    numPartitionsFromAttr = *numPartitionsFromAttrPtr;
+  } else {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Failed to extract partition info: "
+                   << llvm::toString(numPartitionsFromAttrPtr.takeError())
+                   << "\n";
+    });
+    return initialPartitions;
+  }
+
+  int64_t partitionIndex = 0;
+  for (auto &partition : initialPartitions.partitions) {
+    if (!checkOneDispatch(partition)) {
       result.partitions.push_back(std::move(partition));
       continue;
     }
@@ -471,13 +521,13 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
                           std::to_string(partitionIndex) + ".dot",
                       clMemoryAwarePartitioningIODir + "/partition-graph-" +
                           std::to_string(partitionIndex) + ".dot.nodemappings");
-      uint64_t numPartitions = std::min(
-          clMemoryAwarePartitioningConfig.numPartitions, partition.ops.size());
+
+    uint64_t numPartitions = std::min(numPartitionsFromAttr[partitionIndex],
+                                      (int64_t)partition.ops.size());
+
       RecursivePartitioner partitioner(
-          graph, numPartitions,
-          clMemoryAwarePartitioningConfig.clusteringMethod,
-          clMemoryAwarePartitioningConfig.maxClusteringLevel,
-          50 * clMemoryAwarePartitioningConfig.numPartitions,
+        graph, numPartitions, clMemoryAwarePartitioningConfig.clusteringMethod,
+        clMemoryAwarePartitioningConfig.maxClusteringLevel, 50 * numPartitions,
           clMemoryAwarePartitioningConfig.minClusteringVertexRatio,
           clMemoryAwarePartitioningConfig.bisectionMethod,
           clMemoryAwarePartitioningConfig.maxImbalance,
@@ -511,6 +561,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       for (auto &partition : partitions)
         result.partitions.push_back(std::move(partition));
     }
+
+    partitionIndex++;
   }
 
   return result;
