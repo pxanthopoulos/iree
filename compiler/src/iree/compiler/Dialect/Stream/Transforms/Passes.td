@@ -480,6 +480,21 @@ def LayoutSlicesPass :
   ];
 }
 
+def CheckPartitionMemoryLimitPass :
+    Pass<"iree-stream-check-partition-memory-limit", "mlir::ModuleOp"> {
+  let summary = "Checks that transient slabs of all partitions respect the defined memory limit.";
+  let description = [{
+    Finds all execution regions and checks that the memory footprint for the
+    transient slab is under a user-defined memory limit. If not, using the 
+    predecessor attribute, it updates the global partitioning attribute, 
+    signifying that the corresponding original partition needs to be 
+    partitioned in more parts.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // Memoization
 //===----------------------------------------------------------------------===//
