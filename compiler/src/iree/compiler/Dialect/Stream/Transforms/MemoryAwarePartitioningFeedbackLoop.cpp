@@ -38,8 +38,34 @@ struct MemoryAwarePartitioningFeedbackLoopPass
       return;
 
     bool firstPass = true;
+    auto initialState = moduleOp.clone();
+
+    int passNo = 1;
 
     while (1) {
+      // Copy previous state and re-run the pipeline (not needed on the first
+      // pass)
+      if (!firstPass) {
+        unsigned numRegions = moduleOp->getNumRegions();
+        for (unsigned i = 0; i < numRegions; ++i) {
+          moduleOp->getRegion(i).takeBody(initialState->getRegion(i));
+        }
+        auto partitioningInfo =
+            moduleOp->getAttr("iree.stream.partitioning.info");
+        moduleOp->setAttrs(initialState->getAttrs());
+        moduleOp->setAttr("iree.stream.partitioning.info", partitioningInfo);
+        initialState = moduleOp.clone();
+      }
+
+      LLVM_DEBUG({
+        llvm::dbgs() << "PASS #" << passNo << "\n\n\n";
+        llvm::dbgs() << "Initial state:\n\n";
+        moduleOp.dump();
+        llvm::dbgs()
+            << "\n\n==========================================================="
+               "===================================================\n\n\n";
+      });
+
       OpPassManager passManager;
 
       IREE::Stream::TransformOptions transformOptions;
@@ -50,6 +76,9 @@ struct MemoryAwarePartitioningFeedbackLoopPass
 
       ScheduleExecutionPassOptions scheduleExecutionPassOptions;
 
+      // For the first pass, turn off memory-aware partitioning to see worst
+      // case memory usage (max concurrency). Also, the first pass is used to
+      // gather info about initial partitions.
       if (firstPass) {
         scheduleExecutionPassOptions.enableMemoryAwarePartitioning = false;
       } else {
@@ -65,6 +94,9 @@ struct MemoryAwarePartitioningFeedbackLoopPass
           // Group concurrently executable work into waves.
           .addPass(IREE::Stream::createScheduleConcurrencyPass);
 
+      // Analysis must run on the initial partitions produced by
+      // Reference partitioning, so only on the first pass were subsequent
+      // partitioning (memory-aware partitioning) is turned off.
       if (firstPass) {
         passManager.addPass(IREE::Stream::createAnalyzeExecutionRegionsPass());
       }
@@ -115,16 +147,48 @@ struct MemoryAwarePartitioningFeedbackLoopPass
           // propagating subranges.
           .addPass(mlir::createCanonicalizerPass);
 
+      // Check that all execution regions have transient slabs with size less
+      // than the memory limit
+      passManager.addPass(IREE::Stream::createCheckPartitionMemoryLimitPass());
+
       if (failed(runPipeline(passManager, moduleOp))) {
         return signalPassFailure();
       }
+
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "\n\n==========================================================="
+               "===================================================\n\n\n";
+        llvm::dbgs() << "PASS #" << passNo << "\n\n\n";
+        llvm::dbgs() << "After pass:\n\n";
+        moduleOp.dump();
+        llvm::dbgs()
+            << "\n\n==========================================================="
+               "===================================================\n\n\n";
+        llvm::dbgs()
+            << "\n\n==========================================================="
+               "===================================================\n\n\n";
+      });
+
+      // Early exit if memory-aware partitioning is disabled
       if (!clEnableMemoryAwarePartitioning) {
         break;
       }
+
+      // Update flag
       if (firstPass) {
         firstPass = false;
       }
-      break;
+
+      if (auto partitioningInfoAttr = moduleOp->getAttrOfType<StringAttr>(
+              "iree.stream.partitioning.info")) {
+        if (partitioningInfoAttr.getValue() == "pass") {
+          break;
+        }
+      }
+
+      if (passNo++ == 3)
+        break;
     }
   }
 };
