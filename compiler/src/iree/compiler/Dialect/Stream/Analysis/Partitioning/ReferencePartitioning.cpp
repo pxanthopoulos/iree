@@ -153,6 +153,8 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
 
   llvm::DenseMap<Operation *, llvm::SmallVector<Operation *>> syncOps;
 
+  int partitionIndex = 0;
+
   for (auto &op : llvm::reverse(*block)) {
     // Skip constants; they just add noise (and since they are heavily CSE'd
     // they have lots of users to test).
@@ -395,6 +397,7 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     partition.outs = escapingValues;
 
     partition.ops = std::move(builder->ops);
+    partition.predecessorPartition = partitionIndex++;
     partitionSet.partitions.push_back(std::move(partition));
   }
 
