@@ -256,12 +256,12 @@ bool checkOneDispatch(Partition partition) {
 }
 
 llvm::Expected<DenseMap<unsigned, Operation *>>
-partitionToDotGraph(size_t partitionIndex, Partition &partition) {
+partitionToDotGraph(int64_t partitionIndex, Partition &partition) {
   std::ofstream outFile(clMemoryAwarePartitioningIODir + "/partition-graph-" +
                             std::to_string(partitionIndex) + ".dot",
                         std::ios::trunc);
   if (!outFile) {
-    return createStringError(
+    return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         llvm::formatv(
             "Failed to open file: {0}/partition-graph-{1}.dot\nReturning "
@@ -442,7 +442,7 @@ createPartitions(const std::vector<uint64_t> &partitionInfo,
                  const DenseMap<unsigned, Operation *> &opMap,
                  const std::vector<uint64_t> &topSort,
                  const std::vector<uint64_t> &groupedTopSortPositions,
-                 IREE::Stream::AffinityAttr affinity, int partitionIndex) {
+                 IREE::Stream::AffinityAttr affinity, int64_t partitionIndex) {
   auto opGroups =
       createOpGroups(partitionInfo, opMap, topSort, groupedTopSortPositions);
   SmallVector<Partition> result;
@@ -514,52 +514,59 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     auto opMapPtr = partitionToDotGraph(partitionIndex, partition);
     if (!opMapPtr) {
       result.partitions.push_back(std::move(partition));
-    } else {
-      auto opMap = *opMapPtr;
-      Graph graph =
-          readDotFile(clMemoryAwarePartitioningIODir + "/partition-graph-" +
-                          std::to_string(partitionIndex) + ".dot",
-                      clMemoryAwarePartitioningIODir + "/partition-graph-" +
-                          std::to_string(partitionIndex) + ".dot.nodemappings");
+      LLVM_DEBUG({
+        llvm::dbgs() << "Failed to create dot file: "
+                     << llvm::toString(opMapPtr.takeError()) << "\n";
+      });
+      continue;
+    }
+
+    auto opMap = *opMapPtr;
+    Graph graph =
+        readDotFile(clMemoryAwarePartitioningIODir + "/partition-graph-" +
+                        std::to_string(partitionIndex) + ".dot",
+                    clMemoryAwarePartitioningIODir + "/partition-graph-" +
+                        std::to_string(partitionIndex) + ".dot.nodemappings");
 
     uint64_t numPartitions = std::min(numPartitionsFromAttr[partitionIndex],
                                       (int64_t)partition.ops.size());
 
-      RecursivePartitioner partitioner(
+    RecursivePartitioner partitioner(
         graph, numPartitions, clMemoryAwarePartitioningConfig.clusteringMethod,
         clMemoryAwarePartitioningConfig.maxClusteringLevel, 50 * numPartitions,
-          clMemoryAwarePartitioningConfig.minClusteringVertexRatio,
-          clMemoryAwarePartitioningConfig.bisectionMethod,
-          clMemoryAwarePartitioningConfig.maxImbalance,
-          clMemoryAwarePartitioningConfig.refinementMethod,
-          clMemoryAwarePartitioningConfig.maxRefinementPasses);
+        clMemoryAwarePartitioningConfig.minClusteringVertexRatio,
+        clMemoryAwarePartitioningConfig.bisectionMethod,
+        clMemoryAwarePartitioningConfig.maxImbalance,
+        clMemoryAwarePartitioningConfig.refinementMethod,
+        clMemoryAwarePartitioningConfig.maxRefinementPasses);
 
-      auto [partitionInfo, cutSize] = partitioner.run();
-      LLVM_DEBUG({
-        uint64_t maxPartSize =
-            calculateMaxPartSize(partitionInfo, graph, numPartitions);
-        double imbalance =
-            std::abs(((double)maxPartSize / (double)graph.totalWeight) * 100 -
-                     ((double)100 / (double)numPartitions));
-        imbalance = round(imbalance * 10) / 10;
+    auto [partitionInfo, cutSize] = partitioner.run();
 
-        llvm::dbgs() << "Cut size: " << cutSize << "\nImbalance: " << imbalance
-                     << "\n";
-        clMemoryAwarePartitioningConfig.print();
-        for (int node = 0; node < partitionInfo.size(); node++) {
-          llvm::dbgs() << "Node " << node << "\nOp: ";
-          opMap[node]->dump();
-          llvm::dbgs() << "In partition " << partitionInfo[node] << "\n\n\n";
-        }
-      });
+    LLVM_DEBUG({
+      uint64_t maxPartSize =
+          calculateMaxPartSize(partitionInfo, graph, numPartitions);
+      double imbalance =
+          std::abs(((double)maxPartSize / (double)graph.totalWeight) * 100 -
+                   ((double)100 / (double)numPartitions));
+      imbalance = round(imbalance * 10) / 10;
 
-      SmallVector<Partition> partitions =
-          createPartitions(partitionInfo, opMap, graph.topologicalSort(),
-                           graph.groupedTopSortPositions(partitionInfo),
-                           partition.affinity, (int)partitionIndex);
+      llvm::dbgs() << "Cut size: " << cutSize << "\nImbalance: " << imbalance
+                   << "\n";
+      clMemoryAwarePartitioningConfig.print();
+      for (int node = 0; node < partitionInfo.size(); node++) {
+        llvm::dbgs() << "Node " << node << "\nOp: ";
+        opMap[node]->dump();
+        llvm::dbgs() << "In partition " << partitionInfo[node] << "\n\n\n";
+      }
+    });
 
-      for (auto &partition : partitions)
-        result.partitions.push_back(std::move(partition));
+    SmallVector<Partition> partitions =
+        createPartitions(partitionInfo, opMap, graph.topologicalSort(),
+                         graph.groupedTopSortPositions(partitionInfo),
+                         partition.affinity, partitionIndex);
+
+    for (auto &partition : partitions) {
+      result.partitions.push_back(std::move(partition));
     }
 
     partitionIndex++;
