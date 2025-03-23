@@ -157,7 +157,7 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
 
   llvm::DenseMap<Operation *, llvm::SmallVector<Operation *>> syncOps;
 
-  int partitionIndex = 0;
+  int64_t partitionIndex = 0;
 
   for (auto &op : llvm::reverse(*block)) {
 
