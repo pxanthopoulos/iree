@@ -113,7 +113,7 @@ struct ExecutePartitionBuilder {
     }
     if (partition->predecessorPartition != -1) {
       auto value =
-          parentBuilder.getI32IntegerAttr(partition->predecessorPartition);
+          parentBuilder.getI64IntegerAttr(partition->predecessorPartition);
       executeOp->setAttr("iree.stream.partitioning.predecessor", value);
     }
 

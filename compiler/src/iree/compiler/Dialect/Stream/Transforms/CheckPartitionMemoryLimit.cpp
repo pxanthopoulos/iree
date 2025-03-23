@@ -13,10 +13,10 @@ namespace mlir::iree_compiler::IREE::Stream {
 #define GEN_PASS_DEF_CHECKPARTITIONMEMORYLIMITPASS
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h.inc"
 
-static llvm::cl::opt<int> clMemoryAwarePartitioningMemoryLimit(
+static llvm::cl::opt<int64_t> clMemoryAwarePartitioningMemoryLimit(
     "iree-stream-memory-aware-partitioning-memory-limit",
     llvm::cl::desc("Memory limit in Bytes for memory aware partitioning"),
-    llvm::cl::init(INT32_MAX));
+    llvm::cl::init(INT64_MAX));
 
 namespace {
 
@@ -30,14 +30,14 @@ struct CheckPartitionMemoryLimitPass
     if (!predecessorAttr) {
       return failure();
     }
-    int predecessor = predecessorAttr.getInt();
+    int64_t predecessor = predecessorAttr.getInt();
     if (predecessor >= results.size()) {
       return failure();
     }
 
     auto sizeAttr =
         executeOp->getAttrOfType<IntegerAttr>("iree.stream.partitioning.size");
-    int size = sizeAttr ? sizeAttr.getInt() : 0;
+    int64_t size = sizeAttr ? sizeAttr.getInt() : 0;
 
     LLVM_DEBUG({
       llvm::dbgs() << "predecessor: " << predecessor << "\nsize: " << size
