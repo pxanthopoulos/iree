@@ -2,11 +2,7 @@
 
 #include "iree/compiler/Utils/PassUtils.h"
 #include "llvm/Support/Debug.h"
-// #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-// #include "mlir/IR/Builders.h"
-// #include "mlir/IR/BuiltinOps.h"
-// #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/Passes.h"
 
 #define DEBUG_TYPE "iree-stream-memory-aware-partitioning-feedback-loop"
@@ -55,7 +51,13 @@ struct MemoryAwarePartitioningFeedbackLoopPass
       LLVM_DEBUG({
         llvm::dbgs() << "PASS #" << passNo << "\n\n\n";
         llvm::dbgs() << "Initial state:\n\n";
-        moduleOp.dump();
+        auto partitioningInfoAttr = moduleOp->getAttrOfType<StringAttr>(
+            "iree.stream.partitioning.info");
+        if (!partitioningInfoAttr) {
+          llvm::dbgs() << "No partitioning info attribute found\n";
+        } else {
+          partitioningInfoAttr.dump();
+        }
         llvm::dbgs()
             << "\n\n==========================================================="
                "===================================================\n\n\n";
@@ -156,7 +158,13 @@ struct MemoryAwarePartitioningFeedbackLoopPass
                "===================================================\n\n\n";
         llvm::dbgs() << "PASS #" << passNo << "\n\n\n";
         llvm::dbgs() << "After pass:\n\n";
-        moduleOp.dump();
+        auto partitioningInfoAttr = moduleOp->getAttrOfType<StringAttr>(
+            "iree.stream.partitioning.info");
+        if (!partitioningInfoAttr) {
+          llvm::dbgs() << "No partitioning info attribute found\n";
+        } else {
+          partitioningInfoAttr.dump();
+        }
         llvm::dbgs()
             << "\n\n==========================================================="
                "===================================================\n\n\n";
@@ -178,8 +186,7 @@ struct MemoryAwarePartitioningFeedbackLoopPass
         }
       }
 
-      if (passNo++ == 3)
-        break;
+      passNo++;
     }
   }
 };
