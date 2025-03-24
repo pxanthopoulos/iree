@@ -60,7 +60,7 @@ struct CheckPartitionMemoryLimitPass
         os << ",";
       }
       os << std::get<0>(values[i]) << ":" << std::get<1>(values[i]) << ":"
-         << std::get<2>(values[i]) << std::get<3>(values[i]);
+         << std::get<2>(values[i]) << ":" << std::get<3>(values[i]);
     }
 
     return result;
