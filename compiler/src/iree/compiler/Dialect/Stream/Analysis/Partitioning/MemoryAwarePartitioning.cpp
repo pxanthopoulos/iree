@@ -227,15 +227,15 @@ extractNumPartitionsFromAttr(Block *block) {
     llvm::SmallVector<llvm::StringRef> nums;
     pairStr.split(nums, ':');
 
-    if (nums.size() != 3) {
+    if (nums.size() != 4) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           llvm::formatv("Invalid pair format: {0}\n", pairStr));
     }
 
-    int64_t first, second, third;
+    int64_t first, second, third, fourth;
     if (nums[0].getAsInteger(10, first) || nums[1].getAsInteger(10, second) ||
-        nums[2].getAsInteger(10, third)) {
+        nums[2].getAsInteger(10, third) || nums[3].getAsInteger(10, fourth)) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           llvm::formatv("Failed to parse integers: {0}\n", pairStr));
