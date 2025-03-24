@@ -46,7 +46,7 @@ struct AnalyzeExecutionRegionsPass
       if (i > 0) {
         os << ",";
       }
-      os << "1:" << values[i];
+      os << "1:1:" << values[i];
     }
 
     return result;
