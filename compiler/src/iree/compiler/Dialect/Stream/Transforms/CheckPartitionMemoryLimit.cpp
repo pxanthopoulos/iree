@@ -50,7 +50,8 @@ struct CheckPartitionMemoryLimitPass
   }
 
   static std::string createAttributeString(
-      const llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t>> &values) {
+      const llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t, int64_t>>
+          &values) {
     std::string result;
     llvm::raw_string_ostream os(result);
 
@@ -59,7 +60,7 @@ struct CheckPartitionMemoryLimitPass
         os << ",";
       }
       os << std::get<0>(values[i]) << ":" << std::get<1>(values[i]) << ":"
-         << std::get<2>(values[i]);
+         << std::get<2>(values[i]) << std::get<3>(values[i]);
     }
 
     return result;
@@ -78,7 +79,8 @@ struct CheckPartitionMemoryLimitPass
     }
 
     llvm::StringRef partitioningInfoStr = partitioningInfoAttr.getValue();
-    llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t>> partitioningInfo;
+    llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t, int64_t>>
+        partitioningInfo;
     llvm::SmallVector<llvm::StringRef> pairStrs;
     partitioningInfoStr.split(pairStrs, ',');
 
@@ -86,20 +88,20 @@ struct CheckPartitionMemoryLimitPass
       llvm::SmallVector<llvm::StringRef> nums;
       pairStr.split(nums, ':');
 
-      if (nums.size() != 3) {
+      if (nums.size() != 4) {
         LLVM_DEBUG(llvm::dbgs() << "Invalid pair format: " << pairStr << "\n");
         return signalPassFailure();
       }
 
-      int64_t first, second, third;
+      int64_t first, second, third, fourth;
       if (nums[0].getAsInteger(10, first) || nums[1].getAsInteger(10, second) ||
-          nums[2].getAsInteger(10, third)) {
+          nums[2].getAsInteger(10, third) || nums[3].getAsInteger(10, fourth)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "Failed to parse integers: " << pairStr << "\n");
         return signalPassFailure();
       }
 
-      partitioningInfo.emplace_back(first, second, third);
+      partitioningInfo.emplace_back(first, second, third, fourth);
     }
 
     llvm::SmallVector<bool> results(partitioningInfo.size(), true);
@@ -126,11 +128,31 @@ struct CheckPartitionMemoryLimitPass
 
     bool runAgain = false;
     for (size_t i = 0; i < results.size(); ++i) {
+      // If the predecessor of this execution region needs to be partitioned
+      // further
       if (!results[i]) {
+        // If mid == top for the binary search
         if (std::get<1>(partitioningInfo[i]) ==
             std::get<2>(partitioningInfo[i])) {
-          return signalPassFailure();
-        } else {
+          // Most likely, we reached the max number of partitions and must fail
+          if (std::get<2>(partitioningInfo[i]) ==
+              std::get<3>(partitioningInfo[i])) {
+            return signalPassFailure();
+          }
+          // Edge case: Top signifies the biggest number of partitions that
+          // succeeded. Mid signifies the current number of partitions that was
+          // attempted But mid failed and mid == top? This can happen due to
+          // randomness in the partition algorithm. In this case, we will try
+          // lower partition numbers linearly, until one succeeds
+          else {
+            runAgain = true;
+            std::get<0>(partitioningInfo[i])--;
+            std::get<1>(partitioningInfo[i])--;
+            std::get<2>(partitioningInfo[i])--;
+          }
+        }
+        // Change bottom and mid accordingly and try again
+        else {
           runAgain = true;
           std::get<0>(partitioningInfo[i]) = std::get<1>(partitioningInfo[i]);
           std::get<1>(partitioningInfo[i]) = std::get<0>(partitioningInfo[i]) +
@@ -138,7 +160,11 @@ struct CheckPartitionMemoryLimitPass
           std::get<1>(partitioningInfo[i]) =
               (std::get<1>(partitioningInfo[i]) + 1) / 2;
         }
-      } else {
+      }
+      // If the precessor of this execution region need not be partitioned
+      // further, we can try lower parition numbers
+      else {
+        // If mid != top, we can update mid and top accordingly and try again
         if (std::get<1>(partitioningInfo[i]) !=
             std::get<2>(partitioningInfo[i])) {
           runAgain = true;
@@ -148,6 +174,8 @@ struct CheckPartitionMemoryLimitPass
           std::get<1>(partitioningInfo[i]) =
               (std::get<1>(partitioningInfo[i]) + 1) / 2;
         }
+        // Else, we do not have any more parition numbers to check and we should
+        // exit the loop
       }
     }
 
