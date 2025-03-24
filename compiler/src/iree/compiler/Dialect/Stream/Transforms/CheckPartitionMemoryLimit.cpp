@@ -1,4 +1,4 @@
-#include <cstdint>
+// #include <cstdint>
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -39,12 +39,6 @@ struct CheckPartitionMemoryLimitPass
         executeOp->getAttrOfType<IntegerAttr>("iree.stream.partitioning.size");
     int64_t size = sizeAttr ? sizeAttr.getInt() : 0;
 
-    LLVM_DEBUG({
-      llvm::dbgs() << "predecessor: " << predecessor << "\nsize: " << size
-                   << "\n";
-      executeOp->dump();
-    });
-
     if (size > clMemoryAwarePartitioningMemoryLimit) {
       results[predecessor] = false;
       LLVM_DEBUG(llvm::dbgs()
@@ -56,7 +50,7 @@ struct CheckPartitionMemoryLimitPass
   }
 
   static std::string createAttributeString(
-      const llvm::SmallVector<std::pair<int64_t, int64_t>> &values) {
+      const llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t>> &values) {
     std::string result;
     llvm::raw_string_ostream os(result);
 
@@ -64,7 +58,8 @@ struct CheckPartitionMemoryLimitPass
       if (i > 0) {
         os << ",";
       }
-      os << values[i].first << ":" << values[i].second;
+      os << std::get<0>(values[i]) << ":" << std::get<1>(values[i]) << ":"
+         << std::get<2>(values[i]);
     }
 
     return result;
@@ -83,7 +78,7 @@ struct CheckPartitionMemoryLimitPass
     }
 
     llvm::StringRef partitioningInfoStr = partitioningInfoAttr.getValue();
-    llvm::SmallVector<std::pair<int64_t, int64_t>> partitioningInfo;
+    llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t>> partitioningInfo;
     llvm::SmallVector<llvm::StringRef> pairStrs;
     partitioningInfoStr.split(pairStrs, ',');
 
@@ -91,19 +86,20 @@ struct CheckPartitionMemoryLimitPass
       llvm::SmallVector<llvm::StringRef> nums;
       pairStr.split(nums, ':');
 
-      if (nums.size() != 2) {
+      if (nums.size() != 3) {
         LLVM_DEBUG(llvm::dbgs() << "Invalid pair format: " << pairStr << "\n");
         return signalPassFailure();
       }
 
-      int64_t first, second;
-      if (nums[0].getAsInteger(10, first) || nums[1].getAsInteger(10, second)) {
+      int64_t first, second, third;
+      if (nums[0].getAsInteger(10, first) || nums[1].getAsInteger(10, second) ||
+          nums[2].getAsInteger(10, third)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "Failed to parse integers: " << pairStr << "\n");
         return signalPassFailure();
       }
 
-      partitioningInfo.emplace_back(first, second);
+      partitioningInfo.emplace_back(first, second, third);
     }
 
     llvm::SmallVector<bool> results(partitioningInfo.size(), true);
@@ -128,17 +124,34 @@ struct CheckPartitionMemoryLimitPass
       }
     }
 
-    bool oneFailure = false;
+    bool runAgain = false;
     for (size_t i = 0; i < results.size(); ++i) {
       if (!results[i]) {
-        partitioningInfo[i].first++;
-        if (partitioningInfo[i].first > partitioningInfo[i].second) {
+        if (std::get<1>(partitioningInfo[i]) ==
+            std::get<2>(partitioningInfo[i])) {
           return signalPassFailure();
+        } else {
+          runAgain = true;
+          std::get<0>(partitioningInfo[i]) = std::get<1>(partitioningInfo[i]);
+          std::get<1>(partitioningInfo[i]) = std::get<0>(partitioningInfo[i]) +
+                                             std::get<2>(partitioningInfo[i]);
+          std::get<1>(partitioningInfo[i]) =
+              (std::get<1>(partitioningInfo[i]) + 1) / 2;
         }
-        oneFailure = true;
+      } else {
+        if (std::get<1>(partitioningInfo[i]) !=
+            std::get<2>(partitioningInfo[i])) {
+          runAgain = true;
+          std::get<2>(partitioningInfo[i]) = std::get<1>(partitioningInfo[i]);
+          std::get<1>(partitioningInfo[i]) = std::get<0>(partitioningInfo[i]) +
+                                             std::get<2>(partitioningInfo[i]);
+          std::get<1>(partitioningInfo[i]) =
+              (std::get<1>(partitioningInfo[i]) + 1) / 2;
+        }
       }
     }
-    if (!oneFailure) {
+
+    if (!runAgain) {
       OpBuilder builder(moduleOp);
       moduleOp->setAttr("iree.stream.partitioning.info",
                         builder.getStringAttr("pass"));
