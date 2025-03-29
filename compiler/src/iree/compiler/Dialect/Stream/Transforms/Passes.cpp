@@ -238,46 +238,46 @@ void buildStreamAsyncPassPipeline(OpPassManager &passManager,
         // Group concurrently executable work into waves.
         .addPass(IREE::Stream::createScheduleConcurrencyPass);
 
-    // When synchronous initialization is requested we need to separate any
-    // work behind a timepoint in the initializer from the consumers of that
-    // timepoint.
+    // When synchronous initialization is requested we need to separate any work
+    // behind a timepoint in the initializer from the consumers of that timepoint.
     if (transformOptions.initializationMode ==
         IREE::Stream::InitializationMode::Synchronous) {
       passManager.addPass(IREE::Stream::createSyncInitializersPass());
     }
 
-    // Materialize timepoints across the entire module. This simplifies
-    // scheduling of the timeline as we can shake the IR and see what
-    // timepoints we still have left.
+    // Materialize timepoints across the entire module. This simplifies scheduling
+    // of the timeline as we can shake the IR and see what timepoints we still
+    // have left.
     passManager.addPass(IREE::Stream::createPropagateTimepointsPass());
 
     // Expand builtins to dispatches. This may introduce new executables.
-    // We do this after scheduling so that we preserve the semantics of the
-    // ops for partitioning/placement before turning them into opaque
-    // dispatches.
+    // We do this after scheduling so that we preserve the semantics of the ops
+    // for partitioning/placement before turning them into opaque dispatches.
     passManager.addPass(IREE::Stream::createMaterializeBuiltinsPass());
+
+    // TODO(benvanik): outline streams (ala dispatch regions). Note that we may
+    // want to do this earlier to enable better deduplication but that makes the
+    // above passes trickier. Outlining may be more like "find chunks of streams
+    // useful to move into secondary command buffers."
 
     buildStreamCleanupPassPipeline(passManager, transformOptions);
 
     // Everything must now be in stream.async.* form.
     passManager.addPass(IREE::Stream::createVerifyLoweringToAsyncPass());
 
-    // Schedule fine-grained allocations and insert placeholders for
-    // larger/longer lifetime allocations.
+    // Schedule fine-grained allocations and insert placeholders for larger/longer
+    // lifetime allocations.
     passManager.addPass(IREE::Stream::createScheduleAllocationPass());
-    FunctionLikeNest(passManager)
-        // TODO(benvanik): passes to convert alloc to alloca and thread
-        // through streams. Ideally all transient allocs become stream-ordered
-        // allocas. createPropagateTransientsPass()
 
+    FunctionLikeNest(passManager)
         // Allocate backing storage for fused constant resources.
         // This expands packed constants into explicit forms with partitioned
         // storage buffers and upload logic.
         .addPass(IREE::Stream::createPackConstantsPass)
 
-        // Layout packed slices to emit the arithmetic required for all
-        // resource offsets. This enables us to propagate the subviews across
-        // the program below.
+        // Layout packed slices to emit the arithmetic required for all resource
+        // offsets. This enables us to propagate the subviews across the program
+        // below.
         .addPass(IREE::Stream::createLayoutSlicesPass)
 
         // Apply canonicalization patterns to clean up subview ops prior to
