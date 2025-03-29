@@ -141,14 +141,14 @@ struct CheckPartitionMemoryLimitPass
           }
           // Edge case: Top signifies the biggest number of partitions that
           // succeeded. Mid signifies the current number of partitions that was
-          // attempted But mid failed and mid == top? This can happen due to
+          // attempted. But mid failed and mid == top? This can happen due to
           // randomness in the partition algorithm. In this case, we will try
-          // lower partition numbers linearly, until one succeeds
+          // higher partition numbers linearly, until one succeeds
           else {
             runAgain = true;
-            std::get<0>(partitioningInfo[i])--;
-            std::get<1>(partitioningInfo[i])--;
-            std::get<2>(partitioningInfo[i])--;
+            std::get<0>(partitioningInfo[i])++;
+            std::get<1>(partitioningInfo[i])++;
+            std::get<2>(partitioningInfo[i])++;
           }
         }
         // Change bottom and mid accordingly and try again
