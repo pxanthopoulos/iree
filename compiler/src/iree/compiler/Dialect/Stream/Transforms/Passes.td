@@ -258,9 +258,32 @@ def RefineUsagePass :
 
 def MemoryAwarePartitioningFeedbackLoopPass :
     Pass<"iree-stream-memory-aware-partitioning-feedback-loop", "mlir::ModuleOp"> {
-  let summary = "TBD";
+  let summary = "Optimizes stream partitioning through iterative feedback loops to meet memory constraints";
   let description = [{
-    TBD
+    This pass implements a multi-pass partitioning algorithm that iteratively
+    refines partitioning to optimize memory usage. It works through a feedback
+    loop where each run analyzes memory usage of partitions and updates a
+    global attribute that guides subsequent partitioning decisions.
+    
+    The algorithm works in multiple stages:
+    1. Initial Run: Creates baseline partitions and analyzes their memory requirements
+    2. Subsequent Runs: Refines partitioning based on feedback from previous runs
+    
+    When a partition, that later becomes an execution region, exceeds local
+    memory constraints (for transients), the pass increases the number of
+    sub-partitions created from the corresponding baseline partition so as to
+    satisfy memory constraints. When all sub-partitions of a baseline partition
+    satisfy the memory constraint, the pass decreases the number of
+    sub-partitions, so as to allow for more concurrency, while still satisfying
+    the constraint. In order to find the least amount of sub-partitions that
+    satisfy the constraints, binary search is used on each baseline partition.
+    
+    The process terminates when all partitions meet the specified memory limit
+    or when maximum partitioning has been reached.
+    
+    For the above process, the pass uses a global attribute that maintains
+    information about how many sub-partitions should be created for each
+    original partition, allowing for targeted refinement where needed.
   }];
   let dependentDialects = [
     "mlir::arith::ArithDialect",
