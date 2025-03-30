@@ -21,7 +21,10 @@ struct AnalyzeExecutionRegionsPass
     if (executeOp->getRegions().size() > 0) {
       executeOp->walk([&](Operation *nestedOp) {
         if (nestedOp != executeOp &&
-            isa<IREE::Stream::StreamableOpInterface>(nestedOp)) {
+            isa<IREE::Stream::StreamableOpInterface>(nestedOp) &&
+            !nestedOp->hasTrait<OpTrait::ConstantLike>() &&
+            !isa<IREE::Util::GlobalStoreOpInterface>(nestedOp) &&
+            !dyn_cast<IREE::Stream::AsyncConcurrentOp>(nestedOp)) {
           opCount++;
         }
         if (!oneDispatch) {
