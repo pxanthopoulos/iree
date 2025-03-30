@@ -28,10 +28,12 @@ struct CheckPartitionMemoryLimitPass
     auto predecessorAttr = executeOp->getAttrOfType<IntegerAttr>(
         "iree.stream.partitioning.predecessor");
     if (!predecessorAttr) {
+      LLVM_DEBUG(llvm::dbgs() << "No predecessor attribute\n");
       return failure();
     }
     int64_t predecessor = predecessorAttr.getInt();
     if (predecessor >= results.size()) {
+      LLVM_DEBUG(llvm::dbgs() << "Predecessor attribute is larger than the vector size\n");
       return failure();
     }
 
@@ -76,6 +78,15 @@ struct CheckPartitionMemoryLimitPass
     if (!partitioningInfoAttr) {
       LLVM_DEBUG(llvm::dbgs() << "No partitioning info attribute found\n");
       return signalPassFailure();
+    }
+
+    auto constEvalAttr =
+        moduleOp->getAttr("iree.consteval");
+    if (constEvalAttr) {
+      OpBuilder builder(moduleOp);
+      moduleOp->setAttr("iree.stream.partitioning.info",
+                        builder.getStringAttr("pass"));
+      return;
     }
 
     llvm::StringRef partitioningInfoStr = partitioningInfoAttr.getValue();
