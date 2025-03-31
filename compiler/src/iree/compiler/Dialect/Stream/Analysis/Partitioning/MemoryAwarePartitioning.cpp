@@ -320,6 +320,8 @@ partitionToDotGraph(int64_t partitionIndex, Partition &partition) {
     outFile << opIndex << "[weight=" << opWeight << "];\n";
   }
 
+  std::map<std::pair<unsigned, unsigned>, int64_t> edgeWeights;
+
   for (const auto op : llvm::reverse(partition.ops)) {
     for (const Value &value : op->getOperands()) {
       Operation *definingOp = value.getDefiningOp();
@@ -340,11 +342,20 @@ partitionToDotGraph(int64_t partitionIndex, Partition &partition) {
 
         unsigned parentOpIndex = inverseOpMap[definingOp];
         unsigned opIndex = inverseOpMap[op];
-        outFile << parentOpIndex << "->" << opIndex << "[weight=" << actualSize
-                << "];\n";
+        std::pair<unsigned, unsigned> edge = {parentOpIndex, opIndex};
+        edgeWeights[edge] += actualSize;
       }
     }
   }
+
+  for (const auto &edgeEntry : edgeWeights) {
+    const auto &edge = edgeEntry.first;
+    int64_t totalWeight = edgeEntry.second;
+    
+    outFile << edge.first << "->" << edge.second << "[weight=" << totalWeight
+            << "];\n";
+  }
+
   outFile << "}\n";
   outFile.close();
   return llvm::Expected<DenseMap<unsigned, Operation *>>(std::move(opMap));
