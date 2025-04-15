@@ -8,6 +8,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "mlir/IR/AsmState.h"
 
+#include <filesystem>
 #include <fstream>
 
 #define DEBUG_TYPE "iree-stream-memory-aware-partitioning-partitioner"
@@ -351,7 +352,7 @@ partitionToDotGraph(int64_t partitionIndex, Partition &partition) {
   for (const auto &edgeEntry : edgeWeights) {
     const auto &edge = edgeEntry.first;
     int64_t totalWeight = edgeEntry.second;
-    
+
     outFile << edge.first << "->" << edge.second << "[weight=" << totalWeight
             << "];\n";
   }
@@ -553,6 +554,13 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         clMemoryAwarePartitioningConfig.maxRefinementPasses);
 
     auto [partitionInfo, cutSize] = partitioner.run();
+
+    std::filesystem::remove(clMemoryAwarePartitioningIODir +
+                            "/partition-graph-" +
+                            std::to_string(partitionIndex) + ".dot");
+    std::filesystem::remove(
+        clMemoryAwarePartitioningIODir + "/partition-graph-" +
+        std::to_string(partitionIndex) + ".dot.nodemappings");
 
     LLVM_DEBUG({
       uint64_t maxPartSize =
