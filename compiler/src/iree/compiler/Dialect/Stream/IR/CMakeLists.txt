@@ -58,6 +58,7 @@ iree_cc_library(
     iree::compiler::Dialect::Encoding::Utils
     iree::compiler::Dialect::Util::IR
     iree::compiler::Utils
+    iree::compiler::Dialect::VM::IR
   PUBLIC
 )
 
