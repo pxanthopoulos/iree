@@ -1455,6 +1455,8 @@ allocateConstantBatch(IREE::Stream::AsyncExecuteOp executeOp,
       sizeType = std::string("dynamic");
     }
     std::string lifetimeStr;
+    auto lifetime = llvm::cast<IREE::Stream::ResourceType>(resultTypes.front())
+                        .getLifetime();
     if (lifetime == IREE::Stream::Lifetime::Unknown) {
       lifetimeStr = std::string("*");
     } else {
