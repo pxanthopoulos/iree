@@ -104,3 +104,7 @@ artifacts/
 # Side effects of local patching/merging
 *.orig
 *.rej
+
+workspace/
+pyenv/
+iree-build/
