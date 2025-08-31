@@ -103,3 +103,5 @@ artifacts/
 workspace/
 pyenv/
 iree-build/
+.idea/
+.claude/
