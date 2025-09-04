@@ -16,10 +16,12 @@ iree_cc_library(
   HDRS
     "Passes.h"
   SRCS
+    "AnalyzeExecutionRegions.cpp"
     "AnnotateAffinities.cpp"
     "AnnotateDispatchArguments.cpp"
     "AnnotateDispatchAssumptions.cpp"
     "AutomaticReferenceCounting.cpp"
+    "CheckPartitionMemoryLimit.cpp"
     "CloneToConsumers.cpp"
     "ConvertToStream.cpp"
     "DumpStatistics.cpp"
@@ -34,6 +36,7 @@ iree_cc_library(
     "MaterializeBuiltins.cpp"
     "MaterializeCopyOnWrite.cpp"
     "MaterializeEncodings.cpp"
+    "MemoryAwarePartitioningFeedbackLoop.cpp"
     "PackConstants.cpp"
     "PackDispatchOperands.cpp"
     "Passes.cpp"
