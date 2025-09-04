@@ -28,6 +28,11 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include <llvm/Support/raw_ostream.h>
+#include <string>
+#include "iree/compiler/Dialect/HAL/IR/HALOps.h"
+#include "iree/compiler/Dialect/VM/IR/VMOps.h"
+
 namespace mlir::iree_compiler::IREE::Stream {
 
 //===----------------------------------------------------------------------===//
@@ -1433,6 +1438,62 @@ ResourceAllocOp::createSuballocations(
   auto packOp = IREE::Stream::ResourcePackOp::create(
       builder, fusedLoc, indexType, packedOffsetTypes, /*offset=*/nullptr,
       builder.getIndexArrayAttr(lifetimeIntervals), storageSizes, affinityAttr);
+
+  for (size_t i = 0; i < sliceCount; ++i) {
+    auto deviceAffinityAttr =
+        llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
+            packOp->getAttr("affinity"));
+    auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
+    auto moduleOp = packOp->getResult(0).getOwner();
+    while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
+      moduleOp = moduleOp->getParentOp();
+    }
+    SymbolTable symbolTable(moduleOp);
+    auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
+    auto initialValue = rootAttrDef->getAttr("initial_value");
+    std::string buffer;
+    llvm::raw_string_ostream os(buffer);
+    initialValue.print(os);
+    std::string result = os.str();
+    std::string device;
+    if (result.find("cuda") != std::string::npos) {
+      device = std::string("cuda");
+    } else {
+      device = std::string("local");
+    }
+    std::string sizeType;
+    auto value =
+        packOp.getDynamicSliceSizes()[i].getDefiningOp()->getAttr("value");
+    if (value) {
+      sizeType = std::string("static");
+    } else {
+      sizeType = std::string("dynamic");
+    }
+    std::string lifetimeStr;
+    auto lifetime =
+        llvm::cast<IREE::Stream::ResourceType>(resourceType).getLifetime();
+    if (lifetime == IREE::Stream::Lifetime::Unknown) {
+      lifetimeStr = std::string("*");
+    } else {
+      lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
+    }
+    auto sizeCast = builder.createOrFold<arith::IndexCastUIOp>(
+        fusedLoc, builder.getIntegerType(64), packOp.getDynamicSliceSizes()[i]);
+    auto offsetCast = builder.createOrFold<arith::IndexCastUIOp>(
+        fusedLoc, builder.getIntegerType(64), packOp.getPackedOffsets()[i]);
+    OperationState state{fusedLoc, IREE::VM::PrintOp::getOperationName()};
+    auto finalStr =
+        std::string("RESULT SLICE device:") + device +
+        std::string(" sizetype:") + sizeType + std::string(" lifetime:") +
+        lifetimeStr + std::string(" lifetimevalue:[") +
+        std::to_string(lifetimeIntervals[2 * i]) + std::string(",") +
+        std::to_string(lifetimeIntervals[2 * i + 1]) +
+        std::string("], see size and offset");
+    state.addAttribute("message",
+                       mlir::StringAttr::get(builder.getContext(), finalStr));
+    state.addOperands({sizeCast, offsetCast});
+    builder.create(state);
+  }
 
   // Create the new alloca based on the total required size.
   auto allocOp = IREE::Stream::ResourceAllocOp::create(
