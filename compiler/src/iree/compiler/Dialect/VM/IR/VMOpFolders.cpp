@@ -3385,10 +3385,10 @@ void TraceOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<RemoveDisabledDebugOp<TraceOp>>(context);
 }
 
-void PrintOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                          MLIRContext *context) {
-  results.insert<RemoveDisabledDebugOp<PrintOp>>(context);
-}
+// void PrintOp::getCanonicalizationPatterns(RewritePatternSet &results,
+//                                           MLIRContext *context) {
+//   results.insert<RemoveDisabledDebugOp<PrintOp>>(context);
+// }
 
 void BreakOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                           MLIRContext *context) {

@@ -4740,7 +4740,7 @@ def VM_PrintOp : VM_Op<"print", [
     VM_EncVariadicOperands<"operands">,
   ];
 
-  let hasCanonicalizer = 1;
+  // let hasCanonicalizer = 1;
 }
 
 def VM_BreakOp : VM_Op<"break", [
