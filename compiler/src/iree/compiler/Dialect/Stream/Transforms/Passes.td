@@ -271,6 +271,65 @@ def RefineUsagePass :
 // Stream formation and scheduling
 //===----------------------------------------------------------------------===//
 
+def MemoryAwarePartitioningFeedbackLoopPass :
+    Pass<"iree-stream-memory-aware-partitioning-feedback-loop", "mlir::ModuleOp"> {
+  let summary = "Optimizes stream partitioning through iterative feedback loops to meet memory constraints";
+  let description = [{
+    This pass implements a multi-pass partitioning algorithm that iteratively
+    refines partitioning to optimize memory usage. It works through a feedback
+    loop where each run analyzes memory usage of partitions and updates a
+    global attribute that guides subsequent partitioning decisions.
+    
+    The algorithm works in multiple stages:
+    1. Initial Run: Creates baseline partitions and analyzes their memory requirements
+    2. Subsequent Runs: Refines partitioning based on feedback from previous runs
+    
+    When a partition, that later becomes an execution region, exceeds local
+    memory constraints (for transients), the pass increases the number of
+    sub-partitions created from the corresponding baseline partition so as to
+    satisfy memory constraints. When all sub-partitions of a baseline partition
+    satisfy the memory constraint, the pass decreases the number of
+    sub-partitions, so as to allow for more concurrency, while still satisfying
+    the constraint. In order to find the least amount of sub-partitions that
+    satisfy the constraints, binary search is used on each baseline partition.
+    
+    The process terminates when all partitions meet the specified memory limit
+    or when maximum partitioning has been reached.
+    
+    For the above process, the pass uses a global attribute that maintains
+    information about how many sub-partitions should be created for each
+    original partition, allowing for targeted refinement where needed.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "IREE::Stream::StreamDialect",
+  ];
+  let options = [
+      Option<
+        "initializationMode", "initialization-mode", 
+        "IREE::Stream::InitializationMode", 
+        /*default=*/"IREE::Stream::InitializationMode::Synchronous",
+        "Specifies the initialization mode for parameters and globals."
+      >,
+      Option<
+        "optimizeBindings", "optimize-bindings", 
+        "bool", 
+        /*default=*/"true",
+        "Enables binding fusion and dispatch site specialization."
+      >,
+      Option<"dumpStatisticsFormat", "dump-statistics-format", 
+        "IREE::Stream::DumpOutputFormat", 
+        /*default=*/"IREE::Stream::DumpOutputFormat::None",
+        "Dumps statistics in the specified output format."
+      >,
+      Option<"dumpStatisticsFile", "dump-statistics-file", 
+        "std::string", 
+        /*default=*/"",
+        "File path to write to; or `` for stderr or `-` for stdout."
+      >,
+    ];
+}
+
 def ScheduleExecutionPass :
     InterfacePass<"iree-stream-schedule-execution", "mlir::CallableOpInterface"> {
   let summary = "Identifies and groups asynchronous operations into executable regions within function-like regions.";
@@ -288,6 +347,14 @@ def ScheduleExecutionPass :
   let dependentDialects = [
     "IREE::Stream::StreamDialect",
   ];
+  let options = [
+    Option<
+      "enableMemoryAwarePartitioning", "enable-memory-aware-partitioning",
+      "bool",
+      /*default=*/"false",
+      "Flag for whether to enable memory aware partitioning."
+    >,
+  ];
 }
 
 def ScheduleConcurrencyPass :
@@ -298,6 +365,22 @@ def ScheduleConcurrencyPass :
     `stream.async.execute` regions into a tree with `stream.async.concurrent`
     ops indicating two or more operations that are allowed to execute
     concurrently even if resources may alias.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
+def AnalyzeExecutionRegionsPass :
+    Pass<"iree-stream-analyze-execution-regions", "mlir::ModuleOp"> {
+  let summary = "Analyzes initial execution regions and gathers info about them.";
+  let description = [{
+    Visits each execution region and counts the number of ops inside them.
+    Then, it creates a string attribute with initial partition number (1) for each
+    along with the maximum number of partitions.
+
+    So, if we have 3 execution regions with 10, 20 and 30 ops respectively, the attribute
+    will be "1:10,1:20,1:30"
   }];
   let dependentDialects = [
     "IREE::Stream::StreamDialect",
@@ -463,6 +546,21 @@ def ReuseAllocationsPass :
     immediately after their await timepoint has been reached. With this
     allowance the compiler is allowed to treat any allocation on the same
     affinity as an atomic reallocation of the resource for reuse.
+    }];
+    let dependentDialects = [
+      "IREE::Stream::StreamDialect",
+  ];
+}
+
+def CheckPartitionMemoryLimitPass :
+    Pass<"iree-stream-check-partition-memory-limit", "mlir::ModuleOp"> {
+  let summary = "Checks that transient slabs of all partitions respect the defined memory limit.";
+  let description = [{
+    Finds all execution regions and checks that the memory footprint for the
+    transient slab is under a user-defined memory limit. If not, using the 
+    predecessor attribute, it updates the global partitioning attribute, 
+    signifying that the corresponding original partition needs to be 
+    partitioned in more parts.
   }];
   let dependentDialects = [
     "IREE::Stream::StreamDialect",

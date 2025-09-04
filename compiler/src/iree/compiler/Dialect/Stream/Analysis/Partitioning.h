@@ -34,6 +34,15 @@ struct Partition {
   // streamable (such as constants and arithmetic).
   SetVector<Operation *> ops;
 
+  // After memory-aware partitioning, we must know which new partitions came
+  // from which original partitions. For example, if Reference partitioning
+  // produces 3 partitions and they are susequently broken into 4,5,6
+  // sub-partitions, we must know which sub-partition belongs to which original
+  // partition.
+  // Initial value indicates partition comes from Reference partitioning
+  // and is an original one.
+  int64_t predecessorPartition = -1;
+
   void dump(AsmState &asmState);
 
   // Verifies that the partition meets the required conditions.
@@ -104,7 +113,8 @@ struct PartitionSet {
 // non-streamable ops if it is safe to do so (such as std arithmetic). Not all
 // ops in the block will be covered by a partition.
 PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
-                                    Block *block);
+                                    Block *block,
+                                    bool enableMemoryAwarePartitioning);
 
 PartitionSet memoryAwarePartition(PartitionSet initialPartitions, Block *block);
 

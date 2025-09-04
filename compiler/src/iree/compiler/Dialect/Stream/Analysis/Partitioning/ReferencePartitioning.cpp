@@ -157,6 +157,8 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
 
   llvm::DenseMap<Operation *, llvm::SmallVector<Operation *>> syncOps;
 
+  int64_t partitionIndex = 0;
+
   for (auto &op : llvm::reverse(*block)) {
 
     LLVM_DEBUG({
@@ -450,6 +452,7 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     partition.outs = escapingValues;
 
     partition.ops = std::move(builder->ops);
+    partition.predecessorPartition = partitionIndex++;
     partitionSet.partitions.push_back(std::move(partition));
   }
 

@@ -111,6 +111,11 @@ struct ExecutePartitionBuilder {
     if (partition->affinity) {
       executeOp.setAffinityAttr(partition->affinity);
     }
+    if (partition->predecessorPartition != -1) {
+      auto value =
+          parentBuilder.getI64IntegerAttr(partition->predecessorPartition);
+      executeOp->setAttr("iree.stream.partitioning.predecessor", value);
+    }
 
     // Add entry block and arguments.
     auto &entryBlock = executeOp.getBody().emplaceBlock();
@@ -225,11 +230,13 @@ static SmallVector<Block *, 8> sortBlocksInDominanceOrder(Region &region) {
 }
 
 LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
-                            const PartitioningConfigAttr &configAttr) {
+                            const PartitioningConfigAttr &configAttr,
+                            bool enableMemoryAwarePartitioning) {
   for (auto *block : sortBlocksInDominanceOrder(region)) {
     // Compute a set of partitions covering all of the streamable ops in the
     // block.
-    auto partitionSet = partitionStreamableOps(configAttr, block);
+    auto partitionSet = partitionStreamableOps(configAttr, block,
+                                               enableMemoryAwarePartitioning);
     if (partitionSet.empty())
       continue;
     if (failed(partitionSet.verify(loc))) {
@@ -308,7 +315,8 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     for (auto &op : *block) {
       if (isa<scf::SCFDialect>(op.getDialect())) {
         for (auto &subregion : op.getRegions()) {
-          if (failed(processRegion(loc, context, subregion, configAttr)))
+          if (failed(processRegion(loc, context, subregion, configAttr,
+                                   enableMemoryAwarePartitioning)))
             return failure();
         }
       }
@@ -334,6 +342,8 @@ struct RemoveBarriers : public OpRewritePattern<IREE::Stream::AsyncBarrierOp> {
 struct ScheduleExecutionPass
     : public IREE::Stream::impl::ScheduleExecutionPassBase<
           ScheduleExecutionPass> {
+  using IREE::Stream::impl::ScheduleExecutionPassBase<
+      ScheduleExecutionPass>::ScheduleExecutionPassBase;
   void runOnOperation() override {
     auto *context = &getContext();
     mlir::CallableOpInterface parentOp = getOperation();
@@ -351,7 +361,8 @@ struct ScheduleExecutionPass
     // order so that we are sure if we replace values that dominate other blocks
     // they see the correct values.
     auto &region = *parentOp.getCallableRegion();
-    if (failed(processRegion(parentOp.getLoc(), context, region, configAttr)))
+    if (failed(processRegion(parentOp.getLoc(), context, region, configAttr,
+                             enableMemoryAwarePartitioning)))
       return signalPassFailure();
 
     // Cleanup the dead ops.
