@@ -21,6 +21,7 @@ iree_cc_library(
   SRCS
     "Affinity.cpp"
     "Partitioning.cpp"
+    "Partitioning/MemoryAwarePartitioning.cpp"
     "Partitioning/ReferencePartitioning.cpp"
     "ResourceHazards.cpp"
     "ResourceUsage.cpp"
@@ -38,6 +39,7 @@ iree_cc_library(
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::IR
+    dag_partitioning
   PUBLIC
 )
 

@@ -105,6 +105,9 @@ struct PartitionSet {
 // ops in the block will be covered by a partition.
 PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
                                     Block *block);
+
+PartitionSet memoryAwarePartition(PartitionSet initialPartitions, Block *block);
+
 PartitionSet
 partitionRegionConcurrency(IREE::Stream::PartitioningConfigAttr config,
                            Block *block);

@@ -17,6 +17,7 @@ iree_compiler_cc_library(
     srcs = [
         "Affinity.cpp",
         "Partitioning.cpp",
+        "Partitioning/MemoryAwarePartitioning.cpp",
         "Partitioning/ReferencePartitioning.cpp",
         "ResourceHazards.cpp",
         "ResourceUsage.cpp",

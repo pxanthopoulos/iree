@@ -1084,6 +1084,11 @@ if(IREE_TARGET_BACKEND_METAL_SPIRV)
   iree_add_spirv_cross_subdirectory()
 endif()
 
+# DAG partitioning library
+if(IREE_BUILD_COMPILER)
+  add_subdirectory(third_party/dag-partitioning EXCLUDE_FROM_ALL)
+endif()
+
 #-------------------------------------------------------------------------------
 # IREE top-level libraries
 #-------------------------------------------------------------------------------
