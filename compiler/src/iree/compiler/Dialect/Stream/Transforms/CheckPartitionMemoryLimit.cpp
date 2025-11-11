@@ -74,19 +74,19 @@ struct CheckPartitionMemoryLimitPass
     if (moduleOp.getBody()->empty())
       return;
 
-    auto partitioningInfoAttr =
-        moduleOp->getAttrOfType<StringAttr>("iree.stream.partitioning.info");
-    if (!partitioningInfoAttr) {
-      LLVM_DEBUG(llvm::dbgs() << "No partitioning info attribute found\n");
-      return signalPassFailure();
-    }
-
     auto constEvalAttr = moduleOp->getAttr("iree.consteval");
     if (constEvalAttr) {
       OpBuilder builder(moduleOp);
       moduleOp->setAttr("iree.stream.partitioning.info",
                         builder.getStringAttr("pass"));
       return;
+    }
+
+    auto partitioningInfoAttr =
+        moduleOp->getAttrOfType<StringAttr>("iree.stream.partitioning.info");
+    if (!partitioningInfoAttr) {
+      LLVM_DEBUG(llvm::dbgs() << "No partitioning info attribute found\n");
+      return signalPassFailure();
     }
 
     llvm::StringRef partitioningInfoStr = partitioningInfoAttr.getValue();

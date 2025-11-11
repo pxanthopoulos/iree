@@ -92,7 +92,7 @@ struct MemoryAwarePartitioningFeedbackLoopPass
           .addPass(IREE::Stream::createScheduleConcurrencyPass);
 
       // Analysis must run on the initial partitions produced by
-      // Reference partitioning, so only on the first pass were subsequent
+      // Reference partitioning, so only on the first pass where subsequent
       // partitioning (memory-aware partitioning) is turned off.
       if (firstPass) {
         passManager.addPass(IREE::Stream::createAnalyzeExecutionRegionsPass());
