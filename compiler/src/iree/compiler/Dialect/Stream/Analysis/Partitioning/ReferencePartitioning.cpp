@@ -452,7 +452,15 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     partition.outs = escapingValues;
 
     partition.ops = std::move(builder->ops);
-    partition.predecessorPartition = partitionIndex++;
+
+    for (const auto &op : partition.ops) {
+      auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
+      if (dispatchOp) {
+        partition.predecessorPartition = partitionIndex++;
+        break;
+      }
+    }
+
     partitionSet.partitions.push_back(std::move(partition));
   }
 

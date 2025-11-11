@@ -25,6 +25,10 @@ struct CheckPartitionMemoryLimitPass
           CheckPartitionMemoryLimitPass> {
   static LogicalResult check(Operation *executeOp,
                              llvm::SmallVector<bool> &results) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Checking executeOp:\n\n";
+      executeOp->dump();
+    });
     auto predecessorAttr = executeOp->getAttrOfType<IntegerAttr>(
         "iree.stream.partitioning.predecessor");
     if (!predecessorAttr) {
@@ -45,7 +49,8 @@ struct CheckPartitionMemoryLimitPass
     if (size > clMemoryAwarePartitioningMemoryLimit) {
       results[predecessor] = false;
       LLVM_DEBUG(llvm::dbgs()
-                 << "Partition " << predecessor << " exceeds memory limit "
+                 << "Partition " << predecessor
+                 << " exceeds memory limit (size is " << size << ") "
                  << clMemoryAwarePartitioningMemoryLimit << "\n");
     }
 
@@ -130,6 +135,17 @@ struct CheckPartitionMemoryLimitPass
       for (auto op : operations) {
         auto executeOp = llvm::dyn_cast<IREE::Stream::CmdExecuteOp>(op);
         if (executeOp) {
+          bool oneDispatch = false;
+          executeOp->walk([&](Operation *op) {
+            auto dispatchOp = llvm::dyn_cast<IREE::Stream::CmdDispatchOp>(op);
+            if (dispatchOp) {
+              oneDispatch = true;
+              return;
+            }
+          });
+          if (!oneDispatch) {
+            continue;
+          }
           if (failed(check(executeOp, results))) {
             return signalPassFailure();
           }
