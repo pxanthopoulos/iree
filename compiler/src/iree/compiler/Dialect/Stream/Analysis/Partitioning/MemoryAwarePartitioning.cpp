@@ -259,12 +259,15 @@ extractNumPartitionsFromAttr(Block *block) {
   return result;
 }
 
-bool checkOneDispatch(Partition partition) {
+bool checkMoreDispatches(Partition partition) {
+  uint64_t totalDispatches = 0;
   for (const auto &op : partition.ops) {
     auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
     if (dispatchOp)
-      return true;
+      totalDispatches++;
   }
+  if (totalDispatches > partition.ops.size() / 2)
+    return true;
   return false;
 }
 
@@ -492,7 +495,7 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
 
   int64_t partitionIndex = 0;
   for (auto &partition : initialPartitions.partitions) {
-    if (!checkOneDispatch(partition)) {
+    if (!checkMoreDispatches(partition)) {
       result.partitions.push_back(std::move(partition));
       continue;
     }

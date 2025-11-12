@@ -135,15 +135,16 @@ struct CheckPartitionMemoryLimitPass
       for (auto op : operations) {
         auto executeOp = llvm::dyn_cast<IREE::Stream::CmdExecuteOp>(op);
         if (executeOp) {
-          bool oneDispatch = false;
+          uint64_t totalDispatches = 0;
+          uint64_t totalOps = 0;
           executeOp->walk([&](Operation *op) {
+            totalOps++;
             auto dispatchOp = llvm::dyn_cast<IREE::Stream::CmdDispatchOp>(op);
             if (dispatchOp) {
-              oneDispatch = true;
-              return;
+              totalDispatches++;
             }
           });
-          if (!oneDispatch) {
+          if (totalDispatches <= totalOps / 2) {
             continue;
           }
           if (failed(check(executeOp, results))) {

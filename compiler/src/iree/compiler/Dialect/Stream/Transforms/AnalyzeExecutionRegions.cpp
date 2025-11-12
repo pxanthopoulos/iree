@@ -17,9 +17,11 @@ struct AnalyzeExecutionRegionsPass
   static void analyze(Operation *executeOp,
                       llvm::SmallVector<int64_t> &maxPartitionValues) {
     int64_t opCount = 0;
-    bool oneDispatch = false;
+    uint64_t totalDispatches = 0;
+    uint64_t totalOps = 0;
     if (executeOp->getRegions().size() > 0) {
       executeOp->walk([&](Operation *nestedOp) {
+        totalOps++;
         if (nestedOp != executeOp &&
             isa<IREE::Stream::StreamableOpInterface>(nestedOp) &&
             !nestedOp->hasTrait<OpTrait::ConstantLike>() &&
@@ -27,15 +29,18 @@ struct AnalyzeExecutionRegionsPass
             !dyn_cast<IREE::Stream::AsyncConcurrentOp>(nestedOp)) {
           opCount++;
         }
-        if (!oneDispatch) {
-          auto dispatchOp =
-              llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(nestedOp);
-          if (dispatchOp)
-            oneDispatch = true;
-        }
+        auto dispatchOp =
+            llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(nestedOp);
+        if (dispatchOp)
+          totalDispatches++;
       });
     }
-    if (oneDispatch) {
+    if (totalDispatches > totalOps / 2) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "ExecuteOp:\n";
+        executeOp->dump();
+        llvm::dbgs() << "Op count: " << opCount << "\n";
+      });
       maxPartitionValues.push_back(opCount);
     }
   }
@@ -51,6 +56,9 @@ struct AnalyzeExecutionRegionsPass
       }
       os << "1:1:" << values[i] << ":" << values[i];
     }
+
+    LLVM_DEBUG(llvm::dbgs() << "Created partitioning info attribute string: "
+                            << result << "\n");
 
     return result;
   }

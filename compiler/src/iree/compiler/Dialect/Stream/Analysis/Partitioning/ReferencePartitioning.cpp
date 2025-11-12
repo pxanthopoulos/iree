@@ -453,13 +453,14 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
 
     partition.ops = std::move(builder->ops);
 
+    uint64_t totalDispatches = 0;
     for (const auto &op : partition.ops) {
       auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
-      if (dispatchOp) {
-        partition.predecessorPartition = partitionIndex++;
-        break;
-      }
+      if (dispatchOp)
+        totalDispatches++;
     }
+    if (totalDispatches > partition.ops.size() / 2)
+      partition.predecessorPartition = partitionIndex++;
 
     partitionSet.partitions.push_back(std::move(partition));
   }
