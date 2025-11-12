@@ -459,7 +459,7 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
       if (dispatchOp)
         totalDispatches++;
     }
-    if (totalDispatches > partition.ops.size() / 2)
+    if (totalDispatches > partition.ops.size() / 5)
       partition.predecessorPartition = partitionIndex++;
 
     partitionSet.partitions.push_back(std::move(partition));

@@ -266,7 +266,7 @@ bool checkMoreDispatches(Partition partition) {
     if (dispatchOp)
       totalDispatches++;
   }
-  if (totalDispatches > partition.ops.size() / 2)
+  if (totalDispatches > partition.ops.size() / 5)
     return true;
   return false;
 }

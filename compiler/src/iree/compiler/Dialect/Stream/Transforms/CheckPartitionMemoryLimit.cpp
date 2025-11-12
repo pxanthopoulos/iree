@@ -144,7 +144,7 @@ struct CheckPartitionMemoryLimitPass
               totalDispatches++;
             }
           });
-          if (totalDispatches <= totalOps / 2) {
+          if (totalDispatches <= totalOps / 5) {
             continue;
           }
           if (failed(check(executeOp, results))) {
