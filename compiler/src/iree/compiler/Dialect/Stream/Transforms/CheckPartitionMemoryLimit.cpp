@@ -1,4 +1,3 @@
-// #include <cstdint>
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -31,10 +30,7 @@ struct CheckPartitionMemoryLimitPass
     });
     auto predecessorAttr = executeOp->getAttrOfType<IntegerAttr>(
         "iree.stream.partitioning.predecessor");
-    if (!predecessorAttr) {
-      LLVM_DEBUG(llvm::dbgs() << "No predecessor attribute\n");
-      return failure();
-    }
+
     int64_t predecessor = predecessorAttr.getInt();
     if (predecessor >= results.size()) {
       LLVM_DEBUG(llvm::dbgs()
@@ -84,6 +80,8 @@ struct CheckPartitionMemoryLimitPass
       OpBuilder builder(moduleOp);
       moduleOp->setAttr("iree.stream.partitioning.info",
                         builder.getStringAttr("pass"));
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Consteval enabled, skipping memory limit check\n");
       return;
     }
 
@@ -135,19 +133,16 @@ struct CheckPartitionMemoryLimitPass
       for (auto op : operations) {
         auto executeOp = llvm::dyn_cast<IREE::Stream::CmdExecuteOp>(op);
         if (executeOp) {
-          uint64_t totalDispatches = 0;
-          uint64_t totalOps = 0;
-          executeOp->walk([&](Operation *op) {
-            totalOps++;
-            auto dispatchOp = llvm::dyn_cast<IREE::Stream::CmdDispatchOp>(op);
-            if (dispatchOp) {
-              totalDispatches++;
-            }
-          });
-          if (totalDispatches <= totalOps / 5) {
+          auto predecessorAttr = executeOp->getAttrOfType<IntegerAttr>(
+              "iree.stream.partitioning.predecessor");
+          if (!predecessorAttr) {
+            LLVM_DEBUG(llvm::dbgs() << "No predecessor attribute\n");
             continue;
           }
           if (failed(check(executeOp, results))) {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Check failed for executeOp, signaling pass "
+                          "failure\n");
             return signalPassFailure();
           }
         }
