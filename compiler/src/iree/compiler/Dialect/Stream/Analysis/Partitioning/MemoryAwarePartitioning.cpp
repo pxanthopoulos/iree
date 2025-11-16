@@ -261,12 +261,20 @@ extractNumPartitionsFromAttr(Block *block) {
 
 bool checkMoreDispatches(Partition partition) {
   uint64_t totalDispatches = 0;
+  uint64_t realOps = 0;
   for (const auto &op : partition.ops) {
+    if (isa<IREE::Stream::StreamableOpInterface>(op) &&
+        !op->hasTrait<OpTrait::ConstantLike>() &&
+        !isa<IREE::Util::GlobalStoreOpInterface>(op) &&
+        !dyn_cast<IREE::Stream::AsyncConcurrentOp>(op) &&
+        !dyn_cast<IREE::Stream::AsyncUpdateOp>(op)) {
+      realOps++;
+    }
     auto dispatchOp = llvm::dyn_cast<IREE::Stream::AsyncDispatchOp>(op);
     if (dispatchOp)
       totalDispatches++;
   }
-  if (totalDispatches > partition.ops.size() / 5)
+  if (totalDispatches > realOps / 5)
     return true;
   return false;
 }

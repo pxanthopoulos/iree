@@ -18,15 +18,14 @@ struct AnalyzeExecutionRegionsPass
                       llvm::SmallVector<int64_t> &maxPartitionValues) {
     int64_t realOps = 0;
     uint64_t totalDispatches = 0;
-    uint64_t totalOps = 0;
     if (executeOp->getRegions().size() > 0) {
       executeOp->walk([&](Operation *nestedOp) {
-        totalOps++;
         if (nestedOp != executeOp &&
             isa<IREE::Stream::StreamableOpInterface>(nestedOp) &&
             !nestedOp->hasTrait<OpTrait::ConstantLike>() &&
             !isa<IREE::Util::GlobalStoreOpInterface>(nestedOp) &&
-            !dyn_cast<IREE::Stream::AsyncConcurrentOp>(nestedOp)) {
+            !dyn_cast<IREE::Stream::AsyncConcurrentOp>(nestedOp) &&
+            !dyn_cast<IREE::Stream::AsyncUpdateOp>(nestedOp)) {
           realOps++;
         }
         auto dispatchOp =
@@ -39,10 +38,9 @@ struct AnalyzeExecutionRegionsPass
       llvm::dbgs() << "ExecuteOp:\n";
       executeOp->dump();
       llvm::dbgs() << "Real ops: " << realOps << "\n";
-      llvm::dbgs() << "Total ops: " << totalOps << "\n";
       llvm::dbgs() << "Total dispatches: " << totalDispatches << "\n";
     });
-    if (totalDispatches > totalOps / 5) {
+    if (totalDispatches > realOps / 5) {
       maxPartitionValues.push_back(realOps);
     }
   }
