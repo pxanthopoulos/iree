@@ -189,7 +189,7 @@ struct CheckPartitionMemoryLimitPass
         }
       }
       // If the precessor of this execution region need not be partitioned
-      // further, we can try lower parition numbers
+      // further, we can try lower partition numbers
       else {
         // If mid != top, we can update mid and top accordingly and try again
         if (std::get<1>(partitioningInfo[i]) !=
@@ -201,8 +201,8 @@ struct CheckPartitionMemoryLimitPass
           std::get<1>(partitioningInfo[i]) =
               (std::get<1>(partitioningInfo[i]) + 1) / 2;
         }
-        // Else, we do not have any more parition numbers to check and we should
-        // exit the loop
+        // Else, we do not have any more partition numbers to check and we
+        // should exit the loop
       }
     }
 
