@@ -8,6 +8,8 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "mlir/IR/AsmState.h"
 
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -527,6 +529,14 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
 
     uint64_t numPartitions = std::min(numPartitionsFromAttr[partitionIndex],
                                       (int64_t)partition.ops.size());
+
+    const char *env_var = std::getenv("NUM_PARTITIONS");
+    if (env_var) {
+      numPartitions = std::stoull(env_var);
+      LLVM_DEBUG(llvm::dbgs() << "Environment variable NUM_PARTITIONS is set. "
+                                 "Overriding numPartitions to "
+                              << numPartitions << "\n");
+    }
 
     dag_partitioning::driver::RecursivePartitioner partitioner(
         graph, numPartitions, clMemoryAwarePartitioningConfig.clusteringMethod,

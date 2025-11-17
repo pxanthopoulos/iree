@@ -5,6 +5,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <cstdlib>
+#include <string>
+
 #define DEBUG_TYPE "iree-stream-memory-aware-partitioning-feedback-loop"
 
 namespace mlir::iree_compiler::IREE::Stream {
@@ -183,6 +186,14 @@ struct MemoryAwarePartitioningFeedbackLoopPass
         if (partitioningInfoAttr.getValue() == "pass") {
           break;
         }
+      }
+
+      const char *env_var = std::getenv("NUM_PARTITIONS");
+      if (env_var) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Environment variable NUM_PARTITIONS is set to "
+                   << env_var << ", stopping loop\n");
+        break;
       }
 
       passNo++;
