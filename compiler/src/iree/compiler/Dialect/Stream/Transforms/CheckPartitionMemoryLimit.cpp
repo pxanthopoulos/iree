@@ -160,7 +160,11 @@ struct CheckPartitionMemoryLimitPass
           // Most likely, we reached the max number of partitions and must fail
           if (std::get<2>(partitioningInfo[i]) ==
               std::get<3>(partitioningInfo[i])) {
-            return signalPassFailure();
+            LLVM_DEBUG(llvm::dbgs()
+                           << "Exceeded maximum partitioning limit for "
+                              "execution region\n";);
+            // return signalPassFailure();
+            continue;
           }
           // Edge case: Top signifies the biggest number of partitions that
           // succeeded. Mid signifies the current number of partitions that was
