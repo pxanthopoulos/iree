@@ -175,11 +175,6 @@ struct MemoryAwarePartitioningFeedbackLoopPass
                "===================================================\n\n\n";
       });
 
-      // Update flag
-      if (firstPass) {
-        firstPass = false;
-      }
-
       // If memory limit is not breached, break the loop
       if (auto partitioningInfoAttr = moduleOp->getAttrOfType<StringAttr>(
               "iree.stream.partitioning.info")) {
@@ -189,11 +184,16 @@ struct MemoryAwarePartitioningFeedbackLoopPass
       }
 
       const char *env_var = std::getenv("NUM_PARTITIONS");
-      if (env_var) {
+      if (env_var && !firstPass) {
         LLVM_DEBUG(llvm::dbgs()
                    << "Environment variable NUM_PARTITIONS is set to "
                    << env_var << ", stopping loop\n");
         break;
+      }
+
+      // Update flag
+      if (firstPass) {
+        firstPass = false;
       }
 
       passNo++;
