@@ -25,7 +25,7 @@ namespace mlir::iree_compiler::IREE::Stream {
 static llvm::cl::opt<Favor> clPartitioningFavor(
     "iree-stream-partitioning-favor",
     llvm::cl::desc("Default stream partitioning favor configuration."),
-    llvm::cl::init(Favor::MinPeakMemory),
+    llvm::cl::init(Favor::Debug),
     llvm::cl::values(
         clEnumValN(Favor::Debug, "debug",
                    "Force debug partitioning (no concurrency or pipelining)."),
