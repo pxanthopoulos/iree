@@ -567,6 +567,33 @@ def CheckPartitionMemoryLimitPass :
   ];
 }
 
+def CalculateLifetimesPass :
+    Pass<"iree-stream-calculate-lifetimes", "mlir::ModuleOp"> {
+  let summary = "Calculates global tensor lifetimes based on allocation patterns.";
+  let description = [{
+    Performs global lifetime analysis based on global execution order (considers no concurrency).
+    Assigns each operation a global timestamp. Tensors are split into intra-region and inter-region.
+    Intra-region tensors are those allocated and deallocated within the same execution region.
+    Their lifetimes are calculated based on the timestamps of the producer and consumer operations
+    within that region. Inter-region tensors are those that span multiple execution regions.
+    Their lifetime is the start of the producer region to the end of the last consumer region.
+    Special case when a region produces multiple inter-region tensors: all get the same lifetime
+    that spans from the start of the region to the end of the last consumer region among them,
+    due to the convoy effect.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+  let options = [
+    Option<
+      "fileSuffixId", "file-suffix-id",
+      "int",
+      /*default=*/"0",
+      "File suffix ID to output global lifetime analysis."
+    >,
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // Memoization
 //===----------------------------------------------------------------------===//

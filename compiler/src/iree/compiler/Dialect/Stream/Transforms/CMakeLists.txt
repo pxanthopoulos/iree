@@ -21,6 +21,7 @@ iree_cc_library(
     "AnnotateDispatchArguments.cpp"
     "AnnotateDispatchAssumptions.cpp"
     "AutomaticReferenceCounting.cpp"
+    "CalculateLifetimes.cpp"
     "CheckPartitionMemoryLimit.cpp"
     "CloneToConsumers.cpp"
     "ConvertToStream.cpp"

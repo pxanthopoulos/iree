@@ -115,6 +115,11 @@ struct ExecutePartitionBuilder {
       auto value =
           parentBuilder.getI64IntegerAttr(partition->predecessorPartition);
       executeOp->setAttr("iree.stream.partitioning.predecessor", value);
+      Operation *parentOp = executeOp->getParentOp();
+      if (dyn_cast<IREE::Util::FuncOp>(parentOp)) {
+        value = parentBuilder.getI64IntegerAttr(1);
+        parentOp->setAttr("iree.stream.conduct_lifetime_analysis", value);
+      }
     }
 
     // Add entry block and arguments.

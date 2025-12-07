@@ -18,6 +18,11 @@ namespace mlir::iree_compiler::IREE::Stream {
 using FunctionLikeNest =
     MultiOpNest<func::FuncOp, IREE::Util::InitializerOp, IREE::Util::FuncOp>;
 
+static llvm::cl::opt<bool> clMemoryAwarePartitioningEnableLifetimeAnalysis(
+    "iree-stream-memory-aware-partitioning-enable-lifetime-analysis",
+    llvm::cl::desc("Enable lifetime analysis for memory aware partitioning"),
+    llvm::cl::init(true));
+
 namespace {
 
 struct MemoryAwarePartitioningFeedbackLoopPass
@@ -93,6 +98,11 @@ struct MemoryAwarePartitioningFeedbackLoopPass
           })
           // Group concurrently executable work into waves.
           .addPass(IREE::Stream::createScheduleConcurrencyPass);
+
+      CalculateLifetimesPassOptions calculateLifetimesPassOptions;
+      calculateLifetimesPassOptions.fileSuffixId = passNo;
+      passManager.addPass(IREE::Stream::createCalculateLifetimesPass(
+          calculateLifetimesPassOptions));
 
       // Analysis must run on the initial partitions produced by
       // Reference partitioning, so only on the first pass where subsequent

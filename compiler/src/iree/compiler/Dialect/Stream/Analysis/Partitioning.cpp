@@ -175,6 +175,16 @@ PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
                                     bool enableMemoryAwarePartitioning) {
   PartitionSet partitions = partitionStreamableOpsReference(config, block);
 
+  int64_t uniqueId = 0;
+  auto *context = block->getParentOp()->getContext();
+  OpBuilder builder(context);
+  for (const auto &partition : partitions.partitions) {
+    for (auto &op : partition.ops) {
+      auto value = builder.getI64IntegerAttr(uniqueId++);
+      op->setAttr("iree.stream.unique_id", value);
+    }
+  }
+
   if (enableMemoryAwarePartitioning) {
     return memoryAwarePartition(partitions, block);
   }
