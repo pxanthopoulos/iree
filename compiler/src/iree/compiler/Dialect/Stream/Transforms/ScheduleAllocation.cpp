@@ -1122,6 +1122,7 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
     auto deviceAffinityAttr =
         llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
             executeOp->getAttr("affinity"));
+    if (deviceAffinityAttr) {
     auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
     auto moduleOp = executeOp->getResult(0).getOwner();
     while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
@@ -1169,15 +1170,18 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
         std::to_string(lifetimeIntervals[2 * i]) + std::string(",") +
         std::to_string(lifetimeIntervals[2 * i + 1]) +
         std::string("], see size and offset");
-    state.addAttribute("message", mlir::StringAttr::get(
-                                      externalBuilder.getContext(), finalStr));
+      state.addAttribute(
+          "message",
+          mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
     state.addOperands({sizeCast, offsetCast});
     externalBuilder.create(state);
+    }
   }
 
   auto deviceAffinityAttr =
       llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
           executeOp->getAttr("affinity"));
+  if (deviceAffinityAttr) {
   auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
   auto moduleOp = executeOp->getResult(0).getOwner();
   while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
@@ -1219,10 +1223,11 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
                   std::string(" sizetype:") + sizeType +
                   std::string(" lifetime:") + lifetimeStr +
                   std::string(", see size");
-  state.addAttribute(
-      "message", mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
+    state.addAttribute("message", mlir::StringAttr::get(
+                                      externalBuilder.getContext(), finalStr));
   state.addOperands({castOp});
   externalBuilder.create(state);
+  }
 
   // Map values to their ranges within the slab.
   auto asmState = getRootAsmState(executeOp->getParentOp());
@@ -1435,6 +1440,7 @@ allocateConstantBatch(IREE::Stream::AsyncExecuteOp executeOp,
     auto deviceAffinityAttr =
         llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
             executeOp->getAttr("affinity"));
+    if (deviceAffinityAttr) {
     auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
     auto moduleOp = executeOp->getResult(0).getOwner();
     while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
@@ -1461,7 +1467,8 @@ allocateConstantBatch(IREE::Stream::AsyncExecuteOp executeOp,
       sizeType = std::string("dynamic");
     }
     std::string lifetimeStr;
-    auto lifetime = llvm::cast<IREE::Stream::ResourceType>(resultTypes.front())
+      auto lifetime =
+          llvm::cast<IREE::Stream::ResourceType>(resultTypes.front())
                         .getLifetime();
     if (lifetime == IREE::Stream::Lifetime::Unknown) {
       lifetimeStr = std::string("*");
@@ -1477,10 +1484,12 @@ allocateConstantBatch(IREE::Stream::AsyncExecuteOp executeOp,
                     std::string(" sizetype:") + sizeType +
                     std::string(" lifetime:") + lifetimeStr +
                     std::string(", see size");
-    state.addAttribute("message", mlir::StringAttr::get(
-                                      externalBuilder.getContext(), finalStr));
+      state.addAttribute(
+          "message",
+          mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
     state.addOperands({castOp});
     externalBuilder.create(state);
+    }
   }
 
   return allocation;
@@ -2030,7 +2039,9 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp,
       auto deviceAffinityAttr =
           llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
               executeOp->getAttr("affinity"));
-      auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
+      if (deviceAffinityAttr) {
+        auto deviceSymbolAttr =
+            deviceAffinityAttr.getDevice().getRootReference();
       auto moduleOp = executeOp->getResult(0).getOwner();
       while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
         moduleOp = moduleOp->getParentOp();
@@ -2049,7 +2060,8 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp,
         device = std::string("local");
       }
       std::string sizeType;
-      auto value = allocaOp.getResultSize(0).getDefiningOp()->getAttr("value");
+        auto value =
+            allocaOp.getResultSize(0).getDefiningOp()->getAttr("value");
       if (value) {
         sizeType = std::string("static");
       } else {
@@ -2078,6 +2090,7 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp,
           mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
       state.addOperands({castOp});
       externalBuilder.create(state);
+      }
 
       auto asmState = getRootAsmState(executeOp->getParentOp());
       LLVM_DEBUG({
