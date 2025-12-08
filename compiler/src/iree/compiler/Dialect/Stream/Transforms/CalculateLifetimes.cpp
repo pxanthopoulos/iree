@@ -53,7 +53,7 @@ struct CalculateLifetimesPass
       executeOpLifetimes[op].second = std::max(time - 1, startTime);
     });
 
-    return time;
+    return time - 2;
   }
 
   void gatherTensorLifetimes(
