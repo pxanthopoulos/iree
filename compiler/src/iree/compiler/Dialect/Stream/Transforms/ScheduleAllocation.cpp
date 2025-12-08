@@ -1123,6 +1123,65 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
         llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
             executeOp->getAttr("affinity"));
     if (deviceAffinityAttr) {
+      auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
+      auto moduleOp = executeOp->getResult(0).getOwner();
+      while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
+        moduleOp = moduleOp->getParentOp();
+      }
+      SymbolTable symbolTable(moduleOp);
+      auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
+      auto initialValue = rootAttrDef->getAttr("initial_value");
+      std::string buffer;
+      llvm::raw_string_ostream os(buffer);
+      initialValue.print(os);
+      std::string result = os.str();
+      std::string device;
+      if (result.find("cuda") != std::string::npos) {
+        device = std::string("cuda");
+      } else {
+        device = std::string("local");
+      }
+      std::string sizeType;
+      auto value =
+          packOp.getDynamicSliceSizes()[i].getDefiningOp()->getAttr("value");
+      if (value) {
+        sizeType = std::string("static");
+      } else {
+        sizeType = std::string("dynamic");
+      }
+      std::string lifetimeStr;
+      auto lifetime = transientType.getLifetime();
+      if (lifetime == IREE::Stream::Lifetime::Unknown) {
+        lifetimeStr = std::string("*");
+      } else {
+        lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
+      }
+      auto sizeCast = externalBuilder.createOrFold<arith::IndexCastUIOp>(
+          fusedLoc, externalBuilder.getIntegerType(64),
+          packOp.getDynamicSliceSizes()[i]);
+      auto offsetCast = externalBuilder.createOrFold<arith::IndexCastUIOp>(
+          fusedLoc, externalBuilder.getIntegerType(64),
+          packOp.getPackedOffsets()[i]);
+      OperationState state{fusedLoc, IREE::VM::PrintOp::getOperationName()};
+      auto finalStr =
+          std::string("TRANSIENT SLICE device:") + device +
+          std::string(" sizetype:") + sizeType + std::string(" lifetime:") +
+          lifetimeStr + std::string(" lifetimevalue:[") +
+          std::to_string(lifetimeIntervals[2 * i]) + std::string(",") +
+          std::to_string(lifetimeIntervals[2 * i + 1]) +
+          std::string("], see size and offset");
+      state.addAttribute(
+          "message",
+          mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
+      state.addOperands({sizeCast, offsetCast});
+      externalBuilder.create(state);
+    }
+  }
+
+  auto deviceAffinityAttr =
+      llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
+          executeOp->getAttr("affinity"));
+  if (deviceAffinityAttr) {
     auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
     auto moduleOp = executeOp->getResult(0).getOwner();
     while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
@@ -1142,8 +1201,7 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
       device = std::string("local");
     }
     std::string sizeType;
-    auto value =
-        packOp.getDynamicSliceSizes()[i].getDefiningOp()->getAttr("value");
+    auto value = allocaOp.getResultSize(0).getDefiningOp()->getAttr("value");
     if (value) {
       sizeType = std::string("static");
     } else {
@@ -1156,77 +1214,19 @@ allocateLocalTransients(IREE::Stream::AsyncExecuteOp executeOp,
     } else {
       lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
     }
-    auto sizeCast = externalBuilder.createOrFold<arith::IndexCastUIOp>(
-        fusedLoc, externalBuilder.getIntegerType(64),
-        packOp.getDynamicSliceSizes()[i]);
-    auto offsetCast = externalBuilder.createOrFold<arith::IndexCastUIOp>(
-        fusedLoc, externalBuilder.getIntegerType(64),
-        packOp.getPackedOffsets()[i]);
-    OperationState state{fusedLoc, IREE::VM::PrintOp::getOperationName()};
-    auto finalStr =
-        std::string("TRANSIENT SLICE device:") + device +
-        std::string(" sizetype:") + sizeType + std::string(" lifetime:") +
-        lifetimeStr + std::string(" lifetimevalue:[") +
-        std::to_string(lifetimeIntervals[2 * i]) + std::string(",") +
-        std::to_string(lifetimeIntervals[2 * i + 1]) +
-        std::string("], see size and offset");
-      state.addAttribute(
-          "message",
-          mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
-    state.addOperands({sizeCast, offsetCast});
-    externalBuilder.create(state);
-    }
-  }
-
-  auto deviceAffinityAttr =
-      llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
-          executeOp->getAttr("affinity"));
-  if (deviceAffinityAttr) {
-  auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
-  auto moduleOp = executeOp->getResult(0).getOwner();
-  while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
-    moduleOp = moduleOp->getParentOp();
-  }
-  SymbolTable symbolTable(moduleOp);
-  auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
-  auto initialValue = rootAttrDef->getAttr("initial_value");
-  std::string buffer;
-  llvm::raw_string_ostream os(buffer);
-  initialValue.print(os);
-  std::string result = os.str();
-  std::string device;
-  if (result.find("cuda") != std::string::npos) {
-    device = std::string("cuda");
-  } else {
-    device = std::string("local");
-  }
-  std::string sizeType;
-  auto value = allocaOp.getResultSize(0).getDefiningOp()->getAttr("value");
-  if (value) {
-    sizeType = std::string("static");
-  } else {
-    sizeType = std::string("dynamic");
-  }
-  std::string lifetimeStr;
-  auto lifetime = transientType.getLifetime();
-  if (lifetime == IREE::Stream::Lifetime::Unknown) {
-    lifetimeStr = std::string("*");
-  } else {
-    lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
-  }
-  auto castOp = externalBuilder.createOrFold<arith::IndexCastUIOp>(
-      executeOp.getLoc(), externalBuilder.getIntegerType(64),
-      allocaOp.getResultSize(0));
-  OperationState state{executeOp.getLoc(),
-                       IREE::VM::PrintOp::getOperationName()};
-  auto finalStr = std::string("TRANSIENT SLAB ALLOCATION device:") + device +
-                  std::string(" sizetype:") + sizeType +
-                  std::string(" lifetime:") + lifetimeStr +
-                  std::string(", see size");
+    auto castOp = externalBuilder.createOrFold<arith::IndexCastUIOp>(
+        executeOp.getLoc(), externalBuilder.getIntegerType(64),
+        allocaOp.getResultSize(0));
+    OperationState state{executeOp.getLoc(),
+                         IREE::VM::PrintOp::getOperationName()};
+    auto finalStr = std::string("TRANSIENT SLAB ALLOCATION device:") + device +
+                    std::string(" sizetype:") + sizeType +
+                    std::string(" lifetime:") + lifetimeStr +
+                    std::string(", see size");
     state.addAttribute("message", mlir::StringAttr::get(
                                       externalBuilder.getContext(), finalStr));
-  state.addOperands({castOp});
-  externalBuilder.create(state);
+    state.addOperands({castOp});
+    externalBuilder.create(state);
   }
 
   // Map values to their ranges within the slab.
@@ -1441,54 +1441,54 @@ allocateConstantBatch(IREE::Stream::AsyncExecuteOp executeOp,
         llvm::dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
             executeOp->getAttr("affinity"));
     if (deviceAffinityAttr) {
-    auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
-    auto moduleOp = executeOp->getResult(0).getOwner();
-    while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
-      moduleOp = moduleOp->getParentOp();
-    }
-    SymbolTable symbolTable(moduleOp);
-    auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
-    auto initialValue = rootAttrDef->getAttr("initial_value");
-    std::string buffer;
-    llvm::raw_string_ostream os(buffer);
-    initialValue.print(os);
-    std::string result = os.str();
-    std::string device;
-    if (result.find("cuda") != std::string::npos) {
-      device = std::string("cuda");
-    } else {
-      device = std::string("local");
-    }
-    std::string sizeType;
-    auto value = reservation.resourceSize.getDefiningOp()->getAttr("value");
-    if (value) {
-      sizeType = std::string("static");
-    } else {
-      sizeType = std::string("dynamic");
-    }
-    std::string lifetimeStr;
+      auto deviceSymbolAttr = deviceAffinityAttr.getDevice().getRootReference();
+      auto moduleOp = executeOp->getResult(0).getOwner();
+      while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
+        moduleOp = moduleOp->getParentOp();
+      }
+      SymbolTable symbolTable(moduleOp);
+      auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
+      auto initialValue = rootAttrDef->getAttr("initial_value");
+      std::string buffer;
+      llvm::raw_string_ostream os(buffer);
+      initialValue.print(os);
+      std::string result = os.str();
+      std::string device;
+      if (result.find("cuda") != std::string::npos) {
+        device = std::string("cuda");
+      } else {
+        device = std::string("local");
+      }
+      std::string sizeType;
+      auto value = reservation.resourceSize.getDefiningOp()->getAttr("value");
+      if (value) {
+        sizeType = std::string("static");
+      } else {
+        sizeType = std::string("dynamic");
+      }
+      std::string lifetimeStr;
       auto lifetime =
           llvm::cast<IREE::Stream::ResourceType>(resultTypes.front())
-                        .getLifetime();
-    if (lifetime == IREE::Stream::Lifetime::Unknown) {
-      lifetimeStr = std::string("*");
-    } else {
-      lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
-    }
-    auto castOp = externalBuilder.createOrFold<arith::IndexCastUIOp>(
-        executeOp.getLoc(), externalBuilder.getIntegerType(64),
-        reservation.resourceSize);
-    OperationState state{executeOp.getLoc(),
-                         IREE::VM::PrintOp::getOperationName()};
-    auto finalStr = std::string("CONSTANT device:") + device +
-                    std::string(" sizetype:") + sizeType +
-                    std::string(" lifetime:") + lifetimeStr +
-                    std::string(", see size");
+              .getLifetime();
+      if (lifetime == IREE::Stream::Lifetime::Unknown) {
+        lifetimeStr = std::string("*");
+      } else {
+        lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
+      }
+      auto castOp = externalBuilder.createOrFold<arith::IndexCastUIOp>(
+          executeOp.getLoc(), externalBuilder.getIntegerType(64),
+          reservation.resourceSize);
+      OperationState state{executeOp.getLoc(),
+                           IREE::VM::PrintOp::getOperationName()};
+      auto finalStr = std::string("CONSTANT device:") + device +
+                      std::string(" sizetype:") + sizeType +
+                      std::string(" lifetime:") + lifetimeStr +
+                      std::string(", see size");
       state.addAttribute(
           "message",
           mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
-    state.addOperands({castOp});
-    externalBuilder.create(state);
+      state.addOperands({castOp});
+      externalBuilder.create(state);
     }
   }
 
@@ -1674,6 +1674,35 @@ reserveResultAllocations(ResultAllocationMap &reservationMap) {
     }
 
     // Remove unused sets. This does a bunch of moves and is really bad but eh.
+    for (int i = sets.size() - 1; i >= 0; --i) {
+      if (sets[i].reservations.empty()) {
+        sets.erase(sets.begin() + i);
+      }
+    }
+    result.push_back(ResultAllocation{affinityAttr, sets});
+  }
+  return result;
+}
+
+// Similar to reserveResultAllocations but splits each reservation into its own
+// allocation even if they share the same lifetime. This is to mitigate convoy
+// effect where one slice of the allocation that is consumed later holds up
+// earlier slices from being freed.
+static std::vector<ResultAllocation>
+reserveResultAllocationsSplit(ResultAllocationMap &reservationMap) {
+  std::vector<ResultAllocation> result;
+  for (auto &[affinityAttr, reservations] : reservationMap) {
+
+    SmallVector<ResultReservationSet> sets(reservations.size());
+    for (size_t i = 0; i < reservations.size(); ++i) {
+      auto &set = sets[i];
+      auto &reservation = reservations[i];
+      set.reservationLocs.push_back(reservation.loc);
+      set.reservationTypes.push_back(reservation.resultType);
+      set.reservationSizes.push_back(reservation.resultSize);
+      set.reservations.push_back(std::move(reservation));
+    }
+
     for (int i = sets.size() - 1; i >= 0; --i) {
       if (sets[i].reservations.empty()) {
         sets.erase(sets.begin() + i);
@@ -2023,7 +2052,8 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp,
     });
     resultReservations[allocationAffinity].push_back(resultReservation);
   }
-  for (auto &resultAllocation : reserveResultAllocations(resultReservations)) {
+  for (auto &resultAllocation :
+       reserveResultAllocationsSplit(resultReservations)) {
     for (auto &reservationSet : resultAllocation.reservationSets) {
       // Allocate and tie an operand to the result.
       auto timepointType =
@@ -2042,54 +2072,54 @@ allocateExecutionRegion(IREE::Stream::AsyncExecuteOp executeOp,
       if (deviceAffinityAttr) {
         auto deviceSymbolAttr =
             deviceAffinityAttr.getDevice().getRootReference();
-      auto moduleOp = executeOp->getResult(0).getOwner();
-      while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
-        moduleOp = moduleOp->getParentOp();
-      }
-      SymbolTable symbolTable(moduleOp);
-      auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
-      auto initialValue = rootAttrDef->getAttr("initial_value");
-      std::string buffer;
-      llvm::raw_string_ostream os(buffer);
-      initialValue.print(os);
-      std::string result = os.str();
-      std::string device;
-      if (result.find("cuda") != std::string::npos) {
-        device = std::string("cuda");
-      } else {
-        device = std::string("local");
-      }
-      std::string sizeType;
+        auto moduleOp = executeOp->getResult(0).getOwner();
+        while (moduleOp->getParentOp() && !isa<ModuleOp>(moduleOp)) {
+          moduleOp = moduleOp->getParentOp();
+        }
+        SymbolTable symbolTable(moduleOp);
+        auto rootAttrDef = symbolTable.lookup(deviceSymbolAttr);
+        auto initialValue = rootAttrDef->getAttr("initial_value");
+        std::string buffer;
+        llvm::raw_string_ostream os(buffer);
+        initialValue.print(os);
+        std::string result = os.str();
+        std::string device;
+        if (result.find("cuda") != std::string::npos) {
+          device = std::string("cuda");
+        } else {
+          device = std::string("local");
+        }
+        std::string sizeType;
         auto value =
             allocaOp.getResultSize(0).getDefiningOp()->getAttr("value");
-      if (value) {
-        sizeType = std::string("static");
-      } else {
-        sizeType = std::string("dynamic");
-      }
-      std::string lifetimeStr;
-      auto lifetime = llvm::cast<IREE::Stream::ResourceType>(
-                          reservationSet.reservationTypes.front())
-                          .getLifetime();
-      if (lifetime == IREE::Stream::Lifetime::Unknown) {
-        lifetimeStr = std::string("*");
-      } else {
-        lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
-      }
-      auto castOp = externalBuilder.createOrFold<arith::IndexCastUIOp>(
-          executeOp.getLoc(), externalBuilder.getIntegerType(64),
-          allocaOp.getResultSize(0));
-      OperationState state{executeOp.getLoc(),
-                           IREE::VM::PrintOp::getOperationName()};
-      auto finalStr = std::string("RESULT SLAB ALLOCATION device:") + device +
-                      std::string(" sizetype:") + sizeType +
-                      std::string(" lifetime:") + lifetimeStr +
-                      std::string(", see size");
-      state.addAttribute(
-          "message",
-          mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
-      state.addOperands({castOp});
-      externalBuilder.create(state);
+        if (value) {
+          sizeType = std::string("static");
+        } else {
+          sizeType = std::string("dynamic");
+        }
+        std::string lifetimeStr;
+        auto lifetime = llvm::cast<IREE::Stream::ResourceType>(
+                            reservationSet.reservationTypes.front())
+                            .getLifetime();
+        if (lifetime == IREE::Stream::Lifetime::Unknown) {
+          lifetimeStr = std::string("*");
+        } else {
+          lifetimeStr = std::string(stringifyLifetime(lifetime).lower());
+        }
+        auto castOp = externalBuilder.createOrFold<arith::IndexCastUIOp>(
+            executeOp.getLoc(), externalBuilder.getIntegerType(64),
+            allocaOp.getResultSize(0));
+        OperationState state{executeOp.getLoc(),
+                             IREE::VM::PrintOp::getOperationName()};
+        auto finalStr = std::string("RESULT SLAB ALLOCATION device:") + device +
+                        std::string(" sizetype:") + sizeType +
+                        std::string(" lifetime:") + lifetimeStr +
+                        std::string(", see size");
+        state.addAttribute(
+            "message",
+            mlir::StringAttr::get(externalBuilder.getContext(), finalStr));
+        state.addOperands({castOp});
+        externalBuilder.create(state);
       }
 
       auto asmState = getRootAsmState(executeOp->getParentOp());
