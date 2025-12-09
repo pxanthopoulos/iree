@@ -99,10 +99,12 @@ struct MemoryAwarePartitioningFeedbackLoopPass
           // Group concurrently executable work into waves.
           .addPass(IREE::Stream::createScheduleConcurrencyPass);
 
-      CalculateLifetimesPassOptions calculateLifetimesPassOptions;
-      calculateLifetimesPassOptions.fileSuffixId = passNo;
-      passManager.addPass(IREE::Stream::createCalculateLifetimesPass(
-          calculateLifetimesPassOptions));
+      if (clMemoryAwarePartitioningEnableLifetimeAnalysis) {
+        CalculateLifetimesPassOptions calculateLifetimesPassOptions;
+        calculateLifetimesPassOptions.fileSuffixId = passNo;
+        passManager.addPass(IREE::Stream::createCalculateLifetimesPass(
+            calculateLifetimesPassOptions));
+      }
 
       // Analysis must run on the initial partitions produced by
       // Reference partitioning, so only on the first pass where subsequent
