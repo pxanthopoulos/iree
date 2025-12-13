@@ -40,3 +40,4 @@
 [submodule "third_party/dag-partitioning"]
 	path = third_party/dag-partitioning
 	url = https://github.com/pxanthopoulos/dag-partitioning
+	branch = scheduling
