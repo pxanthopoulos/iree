@@ -1,5 +1,6 @@
 #include "Graph.h"
 #include "RecursivePartitioner.h"
+#include "Scheduling.h"
 #include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "llvm/Support/CommandLine.h"
@@ -396,10 +397,10 @@ SmallVector<SetVector<Operation *>>
 createOpGroups(const std::vector<uint64_t> &partitionInfo,
                const DenseMap<unsigned, Operation *> &opMap,
                const std::vector<uint64_t> &topSort,
-               const std::vector<uint64_t> &groupedTopSortPositions) {
+               const std::vector<uint64_t> &schedule) {
   struct PartitionData {
     SmallVector<std::pair<Operation *, uint64_t>> ops;
-    uint64_t groupedTopSortPosition = 0;
+    uint64_t schedulePosition = 0;
   };
   DenseMap<uint64_t, PartitionData> partitionData;
 
@@ -408,12 +409,17 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
     topSortPositions[topSort[i]] = i;
   }
 
+  std::vector<uint64_t> schedulePositions(schedule.size());
+  for (unsigned i = 0; i < schedule.size(); ++i) {
+    schedulePositions[schedule[i]] = i;
+  }
+
   for (unsigned i = 0; i < partitionInfo.size(); i++) {
     if (auto op = opMap.lookup(i)) {
       uint64_t partId = partitionInfo[i];
       auto &data = partitionData[partId];
       data.ops.push_back({op, topSortPositions[i]});
-      data.groupedTopSortPosition = groupedTopSortPositions[i];
+      data.schedulePosition = schedulePositions[partId];
     }
   }
 
@@ -422,8 +428,8 @@ createOpGroups(const std::vector<uint64_t> &partitionInfo,
     sortedPartitions.push_back(entry.first);
 
   llvm::sort(sortedPartitions, [&](uint64_t a, uint64_t b) {
-    return partitionData[a].groupedTopSortPosition <
-           partitionData[b].groupedTopSortPosition;
+    return partitionData[a].schedulePosition <
+           partitionData[b].schedulePosition;
   });
 
   SmallVector<SetVector<Operation *>> result;
@@ -550,7 +556,11 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         clMemoryAwarePartitioningConfig.minSizeForParallel,
         clMemoryAwarePartitioningConfig.maxParallelDepth);
 
-    auto [partitionInfo, cutSize] = partitioner.run();
+    auto [partitionMapping, cutSize] = partitioner.run();
+
+    dag_partitioning::scheduling::Scheduler scheduler(graph, partitionMapping,
+                                                      true, false);
+    auto [schedule, peakMemory] = scheduler.run(600);
 
     std::filesystem::remove(clMemoryAwarePartitioningIODir +
                             "/partition-graph-" +
@@ -560,9 +570,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         std::to_string(partitionIndex) + ".dot.nodemappings");
 
     SmallVector<Partition> partitions =
-        createPartitions(partitionInfo, opMap, graph.topologicalSort(),
-                         graph.groupedTopSortPositions(partitionInfo),
-                         partition.affinity, partitionIndex);
+        createPartitions(partitionMapping, opMap, graph.topologicalSort(),
+                         schedule, partition.affinity, partitionIndex);
 
     for (auto &partition : partitions) {
       result.partitions.push_back(std::move(partition));
