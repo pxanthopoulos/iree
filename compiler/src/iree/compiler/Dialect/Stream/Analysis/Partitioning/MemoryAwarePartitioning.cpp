@@ -213,9 +213,9 @@ static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
   return nullptr;
 }
 
-llvm::Expected<llvm::SmallVector<int64_t>>
+llvm::Expected<llvm::SmallVector<std::pair<int64_t, bool>>>
 extractNumPartitionsFromAttr(Block *block) {
-  llvm::SmallVector<int64_t> result;
+  llvm::SmallVector<std::pair<int64_t, bool>> result;
 
   auto *rootOp = block->getParentOp();
   while (auto parentOp = rootOp->getParentOp()) {
@@ -256,7 +256,7 @@ extractNumPartitionsFromAttr(Block *block) {
           llvm::formatv("Failed to parse integers: {0}\n", pairStr));
     }
 
-    result.emplace_back(second);
+    result.emplace_back(second, third - first == 1);
   }
 
   return result;
@@ -496,7 +496,7 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
   auto asmState = getRootAsmState(block);
   PartitionSet result;
 
-  llvm::SmallVector<int64_t> numPartitionsFromAttr;
+  llvm::SmallVector<std::pair<int64_t, bool>> numPartitionsFromAttr;
   auto numPartitionsFromAttrPtr = extractNumPartitionsFromAttr(block);
   if (numPartitionsFromAttrPtr) {
     numPartitionsFromAttr = *numPartitionsFromAttrPtr;
@@ -533,8 +533,9 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         clMemoryAwarePartitioningIODir + "/partition-graph-" +
             std::to_string(partitionIndex) + ".dot.nodemappings");
 
-    uint64_t numPartitions = std::min(numPartitionsFromAttr[partitionIndex],
-                                      (int64_t)partition.ops.size());
+    uint64_t numPartitions =
+        std::min(numPartitionsFromAttr[partitionIndex].first,
+                 (int64_t)partition.ops.size());
 
     const char *env_var = std::getenv("NUM_PARTITIONS");
     if (env_var) {
@@ -558,9 +559,15 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
 
     auto [partitionMapping, cutSize] = partitioner.run();
 
-    dag_partitioning::scheduling::Scheduler scheduler(graph, partitionMapping,
-                                                      true, false);
-    auto [schedule, peakMemory] = scheduler.run(600);
+    std::vector<uint64_t> schedule;
+    if (numPartitionsFromAttr[partitionIndex].second) {
+      dag_partitioning::scheduling::Scheduler scheduler(graph, partitionMapping,
+                                                        true, false);
+      auto result = scheduler.run(3600, 32);
+      schedule = result.first;
+    } else {
+      schedule = graph.partitionTopologicalOrder(partitionMapping);
+    }
 
     std::filesystem::remove(clMemoryAwarePartitioningIODir +
                             "/partition-graph-" +
