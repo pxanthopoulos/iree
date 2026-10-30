@@ -21,7 +21,7 @@ using FunctionLikeNest =
 static llvm::cl::opt<bool> clMemoryAwarePartitioningEnableLifetimeAnalysis(
     "iree-stream-memory-aware-partitioning-enable-lifetime-analysis",
     llvm::cl::desc("Enable lifetime analysis for memory aware partitioning"),
-    llvm::cl::init(true));
+    llvm::cl::init(false));
 
 namespace {
 
