@@ -118,6 +118,10 @@ PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
 
 PartitionSet memoryAwarePartition(PartitionSet initialPartitions, Block *block);
 
+// Returns true if memoryAwarePartition orders the final partitions with the
+// CP-SAT scheduler (--iree-stream-memory-aware-partitioning-enable-scheduling).
+bool isMemoryAwareSchedulingEnabled();
+
 PartitionSet
 partitionRegionConcurrency(IREE::Stream::PartitioningConfigAttr config,
                            Block *block);

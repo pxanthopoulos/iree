@@ -319,7 +319,8 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     // execute ops (with their awaits) at the end of the block in partition
     // order and let the topological sort below hoist everything else.
     if (enableMemoryAwarePartitioning &&
-        clMemoryAwarePartitioningRespectSchedule) {
+        (clMemoryAwarePartitioningRespectSchedule ||
+         isMemoryAwareSchedulingEnabled())) {
       auto insertIt = block->mightHaveTerminator()
                           ? Block::iterator(block->getTerminator())
                           : block->end();

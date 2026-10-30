@@ -30,6 +30,10 @@ static llvm::cl::opt<bool> clMemoryAwarePartitioningEnableScheduling(
                    "instead of using their topological order"),
     llvm::cl::init(false));
 
+bool isMemoryAwareSchedulingEnabled() {
+  return clMemoryAwarePartitioningEnableScheduling;
+}
+
 struct MemoryAwarePartitioningConfig {
   std::string clusteringMethod;
   uint64_t maxClusteringRounds;
