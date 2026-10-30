@@ -32,6 +32,13 @@ static llvm::cl::opt<bool> clEnableMemoryAwarePartitioning(
     "iree-stream-enable-memory-aware-partitioning",
     llvm::cl::desc("Enable memory aware partitioning"), llvm::cl::init(false));
 
+static llvm::cl::opt<bool> clMemoryAwarePartitioningDisableReuseAllocations(
+    "iree-stream-memory-aware-partitioning-disable-reuse-allocations",
+    llvm::cl::desc("Skips ReuseAllocations, which extends the lifetime of a "
+                   "freed transient to the next same-size allocation and so "
+                   "changes the lifetimes the partition scheduler planned"),
+    llvm::cl::init(false));
+
 namespace mlir::iree_compiler::IREE::Stream {
 
 using FunctionLikeNest =
@@ -382,8 +389,10 @@ void buildStreamOptimizationPassPipeline(
 
     // Try to reuse transient allocations that would not increase resource
     // lifetimes.
-    FunctionLikeNest(passManager)
-        .addPass(IREE::Stream::createReuseAllocationsPass);
+    if (!clMemoryAwarePartitioningDisableReuseAllocations) {
+      FunctionLikeNest(passManager)
+          .addPass(IREE::Stream::createReuseAllocationsPass);
+    }
 
     // Elide timepoints in dependency chains where one is known to have been
     // reached by the time another is (A -> B -> A|C).

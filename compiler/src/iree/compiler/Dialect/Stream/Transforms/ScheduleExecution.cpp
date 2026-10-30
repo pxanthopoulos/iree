@@ -13,6 +13,7 @@
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "llvm/ADT/EquivalenceClasses.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -34,6 +35,13 @@ namespace mlir::iree_compiler::IREE::Stream {
 
 #define GEN_PASS_DEF_SCHEDULEEXECUTIONPASS
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h.inc"
+
+static llvm::cl::opt<bool> clMemoryAwarePartitioningRespectSchedule(
+    "iree-stream-memory-aware-partitioning-respect-schedule",
+    llvm::cl::desc("Place memory-aware execution regions in the order of the "
+                   "partition set (the scheduler's order) instead of at the "
+                   "original position of each partition's last op"),
+    llvm::cl::init(false));
 
 namespace {
 
@@ -304,6 +312,27 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     }
     for (auto *deadOp : llvm::reverse(deadOps)) {
       deadOp->erase();
+    }
+
+    // Each execute op was inserted after its partition's last op in the
+    // original block, which ignores the partition set order. Re-sequence the
+    // execute ops (with their awaits) at the end of the block in partition
+    // order and let the topological sort below hoist everything else.
+    if (enableMemoryAwarePartitioning &&
+        clMemoryAwarePartitioningRespectSchedule) {
+      auto insertIt = block->mightHaveTerminator()
+                          ? Block::iterator(block->getTerminator())
+                          : block->end();
+      for (auto &partitionBuilder : partitionBuilders) {
+        Operation *executeOp = partitionBuilder.executeOp;
+        executeOp->moveBefore(block, insertIt);
+        for (auto *user : llvm::make_early_inc_range(executeOp->getUsers())) {
+          if (isa<IREE::Stream::TimepointAwaitOp>(user) &&
+              user->getBlock() == block) {
+            user->moveBefore(block, insertIt);
+          }
+        }
+      }
     }
 
     // Sort the ops in the execution region. This is safe because we are
