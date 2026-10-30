@@ -24,6 +24,12 @@ static llvm::cl::opt<std::string> clMemoryAwarePartitioningIODir(
     llvm::cl::desc("Memory aware partitioning IO dir for dot graphs"),
     llvm::cl::init("."));
 
+static llvm::cl::opt<bool> clMemoryAwarePartitioningEnableScheduling(
+    "iree-stream-memory-aware-partitioning-enable-scheduling",
+    llvm::cl::desc("Schedule the final memory-aware partitions with CP-SAT "
+                   "instead of using their topological order"),
+    llvm::cl::init(false));
+
 struct MemoryAwarePartitioningConfig {
   std::string clusteringMethod;
   uint64_t maxClusteringRounds;
@@ -560,7 +566,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     auto [partitionMapping, cutSize] = partitioner.run();
 
     std::vector<uint64_t> schedule;
-    if (numPartitionsFromAttr[partitionIndex].second) {
+    if (clMemoryAwarePartitioningEnableScheduling &&
+        numPartitionsFromAttr[partitionIndex].second) {
       dag_partitioning::scheduling::Scheduler scheduler(graph, partitionMapping,
                                                         true, false);
       auto result = scheduler.run(3600, 32);
