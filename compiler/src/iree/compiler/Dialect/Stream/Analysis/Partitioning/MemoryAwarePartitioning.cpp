@@ -3,6 +3,7 @@
 #include "Scheduling.h"
 #include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
@@ -13,18 +14,16 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <tuple>
 
 #define DEBUG_TYPE "iree-stream-memory-aware-partitioning-partitioner"
 
 namespace mlir::iree_compiler::IREE::Stream {
-
-static llvm::cl::opt<std::string> clMemoryAwarePartitioningIODir(
-    "iree-stream-memory-aware-partitioning-io-dir",
-    llvm::cl::desc("Memory aware partitioning IO dir for dot graphs"),
-    llvm::cl::init("."));
 
 static llvm::cl::opt<bool> clMemoryAwarePartitioningEnableScheduling(
     "iree-stream-memory-aware-partitioning-enable-scheduling",
@@ -294,105 +293,157 @@ bool checkMoreDispatches(Partition partition) {
   return false;
 }
 
-llvm::Expected<DenseMap<unsigned, Operation *>>
-partitionToDotGraph(int64_t partitionIndex, Partition &partition) {
-  std::ofstream outFile(clMemoryAwarePartitioningIODir + "/partition-graph-" +
-                            std::to_string(partitionIndex) + ".dot",
-                        std::ios::trunc);
-  if (!outFile) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        llvm::formatv(
-            "Failed to open file: {0}/partition-graph-{1}.dot\nReturning "
-            "initial partitions.\n",
-            clMemoryAwarePartitioningIODir, partitionIndex));
+// Returns the size of the resource |value| defined by |op|, or 50 if it is not
+// a static size (partitioning only works for static sizes)
+static int64_t getStaticResourceSize(Operation *op, Value value) {
+  int64_t actualSize = 50;
+  auto sizeAwareOp = dyn_cast_or_null<IREE::Util::SizeAwareOpInterface>(op);
+  if (!sizeAwareOp)
+    return actualSize;
+  auto resultSize = sizeAwareOp.getResultSizeFromValue(value);
+  auto valueTypedAttr =
+      resultSize.getDefiningOp()->getAttrOfType<TypedAttr>("value");
+  if (resultSize.getType().isIntOrIndex() && valueTypedAttr) {
+    if (auto integerAttr = llvm::dyn_cast<mlir::IntegerAttr>(valueTypedAttr))
+      actualSize = integerAttr.getInt();
   }
+  return actualSize;
+}
 
-  outFile << "// size=" << partition.ops.size() << "\n";
-  outFile << "digraph cfg {\n";
-
+// Node ids are the positions of the ops in block order. The scheduler relies
+// on the ids being topological.
+static DenseMap<unsigned, Operation *> buildOpMap(Partition &partition) {
   DenseMap<unsigned, Operation *> opMap;
-  DenseMap<Operation *, unsigned> inverseOpMap;
   for (const auto [opIndex, op] :
        llvm::enumerate(llvm::reverse(partition.ops))) {
     opMap[opIndex] = op;
+  }
+  return opMap;
+}
+
+// Builds the dagP graph of |partition|: a node per op, weighted by the size of
+// the resources it defines, and an edge per producer-consumer pair, weighted by
+// the size of the resources passed along it.
+static dag_partitioning::core::Graph buildGraph(Partition &partition) {
+  dag_partitioning::core::Graph graph(partition.ops.size());
+
+  DenseMap<Operation *, unsigned> inverseOpMap;
+  for (const auto [opIndex, op] :
+       llvm::enumerate(llvm::reverse(partition.ops))) {
     inverseOpMap[op] = opIndex;
     int64_t opWeight = 0;
     auto tiedOp = dyn_cast<IREE::Util::TiedOpInterface>(*op);
-    auto sizeAwareOp = dyn_cast_or_null<IREE::Util::SizeAwareOpInterface>(op);
 
-    for (const auto &[resultIndex, result] :
-         llvm::enumerate(op->getResults())) {
+    for (Value result : op->getResults()) {
       if (!llvm::isa<IREE::Stream::ResourceType>(result.getType())) {
         continue;
       }
-
-      if (tiedOp) {
-        auto tiedOperand = tiedOp.getTiedResultOperand(result);
-        if (tiedOperand) {
-          continue;
-        }
+      if (tiedOp && tiedOp.getTiedResultOperand(result)) {
+        continue;
       }
-
-      // dummy default value, partitioning only works for static sizes
-      int64_t actualSize = 50;
-      if (sizeAwareOp) {
-        auto resultSize = sizeAwareOp.getResultSizeFromValue(result);
-        auto valueTypedAttr =
-            resultSize.getDefiningOp()->getAttrOfType<TypedAttr>("value");
-
-        if (resultSize.getType().isIntOrIndex() && valueTypedAttr) {
-          auto integerAttr = llvm::dyn_cast<mlir::IntegerAttr>(valueTypedAttr);
-          if (integerAttr) {
-            actualSize = integerAttr.getInt();
-          }
-        }
-      }
-
-      opWeight += actualSize;
+      opWeight += getStaticResourceSize(op, result);
     }
-    outFile << opIndex << "[weight=" << opWeight << "];\n";
+    graph.addNode(opIndex, static_cast<uint64_t>(opWeight));
   }
 
+  // Edges are added sorted by (from, to), the order the dot file had
   std::map<std::pair<unsigned, unsigned>, int64_t> edgeWeights;
-
   for (const auto op : llvm::reverse(partition.ops)) {
-    for (const Value &value : op->getOperands()) {
+    for (Value value : op->getOperands()) {
       Operation *definingOp = value.getDefiningOp();
       if (partition.ops.contains(definingOp)) {
-        int64_t actualSize = 50;
-        auto sizeAwareOp =
-            dyn_cast_or_null<IREE::Util::SizeAwareOpInterface>(definingOp);
-
-        if (sizeAwareOp) {
-          auto resultSize = sizeAwareOp.getResultSizeFromValue(value);
-          auto valueTypedAttr =
-              resultSize.getDefiningOp()->getAttrOfType<TypedAttr>("value");
-          if (resultSize.getType().isIntOrIndex() && valueTypedAttr) {
-            actualSize =
-                llvm::dyn_cast<mlir::IntegerAttr>(valueTypedAttr).getInt();
-          }
-        }
-
-        unsigned parentOpIndex = inverseOpMap[definingOp];
-        unsigned opIndex = inverseOpMap[op];
-        std::pair<unsigned, unsigned> edge = {parentOpIndex, opIndex};
-        edgeWeights[edge] += actualSize;
+        edgeWeights[{inverseOpMap[definingOp], inverseOpMap[op]}] +=
+            getStaticResourceSize(definingOp, value);
       }
     }
   }
-
-  for (const auto &edgeEntry : edgeWeights) {
-    const auto &edge = edgeEntry.first;
-    int64_t totalWeight = edgeEntry.second;
-
-    outFile << edge.first << "->" << edge.second << "[weight=" << totalWeight
-            << "];\n";
+  for (const auto &[edge, weight] : edgeWeights) {
+    graph.addEdge(edge.first, edge.second, static_cast<uint64_t>(weight));
   }
 
-  outFile << "}\n";
-  outFile.close();
-  return llvm::Expected<DenseMap<unsigned, Operation *>>(std::move(opMap));
+  return graph;
+}
+
+namespace {
+
+// dagP graphs of the regions of the modules between
+// beginMemoryAwarePartitioningGraphCache and
+// endMemoryAwarePartitioningGraphCache. A region is identified by its module,
+// the position of its callable in the module, the position of its block in the
+// callable and its index among the regions memoryAwarePartition handles in the
+// block. Callables are partitioned in parallel, hence the mutex.
+struct GraphCache {
+  using Key = std::tuple<Operation *, size_t, size_t, int64_t>;
+  std::mutex mutex;
+  llvm::DenseSet<Operation *> activeModules;
+  std::map<Key, std::shared_ptr<const dag_partitioning::core::Graph>> graphs;
+};
+
+GraphCache &getGraphCache() {
+  static GraphCache cache;
+  return cache;
+}
+
+} // namespace
+
+void beginMemoryAwarePartitioningGraphCache(Operation *moduleOp) {
+  auto &cache = getGraphCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  cache.activeModules.insert(moduleOp);
+}
+
+void endMemoryAwarePartitioningGraphCache(Operation *moduleOp) {
+  auto &cache = getGraphCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  cache.activeModules.erase(moduleOp);
+  for (auto it = cache.graphs.begin(); it != cache.graphs.end();) {
+    if (std::get<0>(it->first) == moduleOp) {
+      it = cache.graphs.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+// Returns the cache key of the regions of |block|, or std::nullopt if the
+// cache is not active for its module
+static std::optional<GraphCache::Key> getGraphCacheKey(Block *block) {
+  Operation *callableOp = block->getParentOp();
+  Operation *moduleOp = callableOp->getParentOp();
+  if (!moduleOp || !callableOp->getBlock())
+    return std::nullopt;
+  {
+    auto &cache = getGraphCache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (!cache.activeModules.contains(moduleOp))
+      return std::nullopt;
+  }
+  auto &ops = callableOp->getBlock()->getOperations();
+  size_t callableIndex =
+      std::distance(ops.begin(), Block::iterator(callableOp));
+  auto &blocks = block->getParent()->getBlocks();
+  size_t blockIndex = std::distance(blocks.begin(), Region::iterator(block));
+  return GraphCache::Key{moduleOp, callableIndex, blockIndex, 0};
+}
+
+// Returns the dagP graph of |partition|, from the cache when |key| is set and
+// the graph is cached already
+static std::shared_ptr<const dag_partitioning::core::Graph>
+getGraph(Partition &partition, std::optional<GraphCache::Key> key) {
+  auto &cache = getGraphCache();
+  if (key) {
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    auto it = cache.graphs.find(*key);
+    if (it != cache.graphs.end() && it->second->size == partition.ops.size())
+      return it->second;
+  }
+  auto graph = std::make_shared<const dag_partitioning::core::Graph>(
+      buildGraph(partition));
+  if (key) {
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    cache.graphs[*key] = graph;
+  }
+  return graph;
 }
 
 uint64_t calculateMaxPartSize(const std::vector<uint64_t> &partitionInfo,
@@ -521,6 +572,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     return initialPartitions;
   }
 
+  auto cacheKey = getGraphCacheKey(block);
+
   int64_t partitionIndex = 0;
   for (auto &partition : initialPartitions.partitions) {
     if (!checkMoreDispatches(partition)) {
@@ -528,24 +581,15 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       continue;
     }
 
-    // Graph building covers writing, reading and removing the dot file
+    // Graph building covers building the graph, or looking it up in the
+    // cache, and rebuilding the node id -> op map (the restored module has new
+    // ops)
     auto graphStart = std::chrono::steady_clock::now();
-    auto opMapPtr = partitionToDotGraph(partitionIndex, partition);
-    if (!opMapPtr) {
-      result.partitions.push_back(std::move(partition));
-      LLVM_DEBUG({
-        llvm::dbgs() << "Failed to create dot file: "
-                     << llvm::toString(opMapPtr.takeError()) << "\n";
-      });
-      continue;
-    }
-
-    auto opMap = *opMapPtr;
-    dag_partitioning::core::Graph graph = dag_partitioning::core::readDotFile(
-        clMemoryAwarePartitioningIODir + "/partition-graph-" +
-            std::to_string(partitionIndex) + ".dot",
-        clMemoryAwarePartitioningIODir + "/partition-graph-" +
-            std::to_string(partitionIndex) + ".dot.nodemappings");
+    if (cacheKey)
+      std::get<3>(*cacheKey) = partitionIndex;
+    auto graphPtr = getGraph(partition, cacheKey);
+    const dag_partitioning::core::Graph &graph = *graphPtr;
+    auto opMap = buildOpMap(partition);
     std::chrono::duration<double> graphSeconds =
         std::chrono::steady_clock::now() - graphStart;
 
@@ -593,15 +637,6 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     } else {
       schedule = graph.partitionTopologicalOrder(partitionMapping);
     }
-
-    auto removeStart = std::chrono::steady_clock::now();
-    std::filesystem::remove(clMemoryAwarePartitioningIODir +
-                            "/partition-graph-" +
-                            std::to_string(partitionIndex) + ".dot");
-    std::filesystem::remove(
-        clMemoryAwarePartitioningIODir + "/partition-graph-" +
-        std::to_string(partitionIndex) + ".dot.nodemappings");
-    graphSeconds += std::chrono::steady_clock::now() - removeStart;
 
     auto creationStart = std::chrono::steady_clock::now();
     SmallVector<Partition> partitions =

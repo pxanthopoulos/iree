@@ -1,6 +1,8 @@
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h"
 
+#include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
 #include "iree/compiler/Utils/PassUtils.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Format.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -41,6 +43,12 @@ struct MemoryAwarePartitioningFeedbackLoopPass
     auto loopStart = std::chrono::steady_clock::now();
     bool firstPass = true;
     auto initialState = moduleOp.clone();
+
+    // Build the dagP graph of each region once, in the first iteration that
+    // partitions it, and reuse it in the later iterations
+    beginMemoryAwarePartitioningGraphCache(moduleOp);
+    auto endGraphCache = llvm::make_scope_exit(
+        [&]() { endMemoryAwarePartitioningGraphCache(moduleOp); });
 
     int passNo = 1;
 

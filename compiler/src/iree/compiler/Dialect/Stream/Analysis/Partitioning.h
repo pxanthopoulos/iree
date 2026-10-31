@@ -122,6 +122,13 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions, Block *block);
 // CP-SAT scheduler (--iree-stream-memory-aware-partitioning-enable-scheduling).
 bool isMemoryAwareSchedulingEnabled();
 
+// Between these two calls, memoryAwarePartition builds the dagP graph of each
+// region of |moduleOp| once and reuses it. The memory-aware partitioning
+// feedback loop restores the module to the same IR in every iteration, so the
+// graphs stay the same and only the number of partitions changes.
+void beginMemoryAwarePartitioningGraphCache(Operation *moduleOp);
+void endMemoryAwarePartitioningGraphCache(Operation *moduleOp);
+
 PartitionSet
 partitionRegionConcurrency(IREE::Stream::PartitioningConfigAttr config,
                            Block *block);
