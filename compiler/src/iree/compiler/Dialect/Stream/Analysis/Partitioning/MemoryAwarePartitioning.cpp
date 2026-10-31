@@ -572,8 +572,13 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     std::vector<uint64_t> schedule;
     if (clMemoryAwarePartitioningEnableScheduling &&
         numPartitionsFromAttr[partitionIndex].second) {
-      dag_partitioning::scheduling::Scheduler scheduler(graph, partitionMapping,
-                                                        true, false);
+      // Pack partition slabs with the alignments ScheduleAllocation uses
+      auto resourceConfig =
+          IREE::Stream::ResourceConfigAttr::lookup(partition.ops.front());
+      dag_partitioning::scheduling::Scheduler scheduler(
+          graph, partitionMapping, true, false,
+          resourceConfig.getMinBufferOffsetAlignment(),
+          resourceConfig.getMinBufferRangeAlignment());
       auto result = scheduler.run(3600, 32);
       schedule = result.first;
     } else {
