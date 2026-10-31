@@ -6,9 +6,11 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "mlir/IR/AsmState.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -526,6 +528,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       continue;
     }
 
+    // Graph building covers writing, reading and removing the dot file
+    auto graphStart = std::chrono::steady_clock::now();
     auto opMapPtr = partitionToDotGraph(partitionIndex, partition);
     if (!opMapPtr) {
       result.partitions.push_back(std::move(partition));
@@ -542,6 +546,8 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
             std::to_string(partitionIndex) + ".dot",
         clMemoryAwarePartitioningIODir + "/partition-graph-" +
             std::to_string(partitionIndex) + ".dot.nodemappings");
+    std::chrono::duration<double> graphSeconds =
+        std::chrono::steady_clock::now() - graphStart;
 
     uint64_t numPartitions =
         std::min(numPartitionsFromAttr[partitionIndex].first,
@@ -567,7 +573,10 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         clMemoryAwarePartitioningConfig.minSizeForParallel,
         clMemoryAwarePartitioningConfig.maxParallelDepth);
 
+    auto partitioningStart = std::chrono::steady_clock::now();
     auto [partitionMapping, cutSize] = partitioner.run();
+    std::chrono::duration<double> partitioningSeconds =
+        std::chrono::steady_clock::now() - partitioningStart;
 
     std::vector<uint64_t> schedule;
     if (clMemoryAwarePartitioningEnableScheduling &&
@@ -585,16 +594,30 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       schedule = graph.partitionTopologicalOrder(partitionMapping);
     }
 
+    auto removeStart = std::chrono::steady_clock::now();
     std::filesystem::remove(clMemoryAwarePartitioningIODir +
                             "/partition-graph-" +
                             std::to_string(partitionIndex) + ".dot");
     std::filesystem::remove(
         clMemoryAwarePartitioningIODir + "/partition-graph-" +
         std::to_string(partitionIndex) + ".dot.nodemappings");
+    graphSeconds += std::chrono::steady_clock::now() - removeStart;
 
+    auto creationStart = std::chrono::steady_clock::now();
     SmallVector<Partition> partitions =
         createPartitions(partitionMapping, opMap, graph.topologicalSort(),
                          schedule, partition.affinity, partitionIndex);
+    std::chrono::duration<double> creationSeconds =
+        std::chrono::steady_clock::now() - creationStart;
+
+    llvm::errs() << "Memory-aware partitioning region " << partitionIndex
+                 << ": " << numPartitions << " parts, graph building "
+                 << llvm::format("%.6f", graphSeconds.count())
+                 << " seconds, partitioning "
+                 << llvm::format("%.6f", partitioningSeconds.count())
+                 << " seconds, partition creation "
+                 << llvm::format("%.6f", creationSeconds.count())
+                 << " seconds\n";
 
     for (auto &partition : partitions) {
       result.partitions.push_back(std::move(partition));

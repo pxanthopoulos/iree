@@ -2,9 +2,11 @@
 
 #include "iree/compiler/Utils/PassUtils.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Format.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <string>
 
@@ -36,6 +38,7 @@ struct MemoryAwarePartitioningFeedbackLoopPass
     if (moduleOp.getBody()->empty())
       return;
 
+    auto loopStart = std::chrono::steady_clock::now();
     bool firstPass = true;
     auto initialState = moduleOp.clone();
 
@@ -44,6 +47,7 @@ struct MemoryAwarePartitioningFeedbackLoopPass
     while (1) {
       // Copy previous state and re-run the pipeline (not needed on the first
       // pass)
+      auto restoreStart = std::chrono::steady_clock::now();
       if (!firstPass) {
         unsigned numRegions = moduleOp->getNumRegions();
         for (unsigned i = 0; i < numRegions; ++i) {
@@ -55,6 +59,8 @@ struct MemoryAwarePartitioningFeedbackLoopPass
         moduleOp->setAttr("iree.stream.partitioning.info", partitioningInfo);
         initialState = moduleOp.clone();
       }
+      std::chrono::duration<double> restoreSeconds =
+          std::chrono::steady_clock::now() - restoreStart;
 
       LLVM_DEBUG({
         llvm::dbgs() << "PASS #" << passNo << "\n\n\n";
@@ -165,9 +171,17 @@ struct MemoryAwarePartitioningFeedbackLoopPass
       // than the memory limit
       passManager.addPass(IREE::Stream::createCheckPartitionMemoryLimitPass());
 
+      auto pipelineStart = std::chrono::steady_clock::now();
       if (failed(runPipeline(passManager, moduleOp))) {
         return signalPassFailure();
       }
+      std::chrono::duration<double> pipelineSeconds =
+          std::chrono::steady_clock::now() - pipelineStart;
+      llvm::errs() << "Feedback loop iteration " << passNo << ": restore "
+                   << llvm::format("%.6f", restoreSeconds.count())
+                   << " seconds, pipeline "
+                   << llvm::format("%.6f", pipelineSeconds.count())
+                   << " seconds\n";
 
       LLVM_DEBUG({
         llvm::dbgs()
@@ -210,6 +224,12 @@ struct MemoryAwarePartitioningFeedbackLoopPass
 
       passNo++;
     }
+
+    std::chrono::duration<double> loopSeconds =
+        std::chrono::steady_clock::now() - loopStart;
+    llvm::errs() << "Feedback loop total: "
+                 << llvm::format("%.6f", loopSeconds.count()) << " seconds, "
+                 << passNo << " iterations\n";
   }
 };
 
