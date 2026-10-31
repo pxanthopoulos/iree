@@ -280,9 +280,22 @@ def MemoryAwarePartitioningFeedbackLoopPass :
     loop where each run analyzes memory usage of partitions and updates a
     global attribute that guides subsequent partitioning decisions.
     
-    The algorithm works in multiple stages:
-    1. Initial Run: Creates baseline partitions and analyzes their memory requirements
-    2. Subsequent Runs: Refines partitioning based on feedback from previous runs
+    Each run starts from the module as it was before the pass, so only the
+    number of sub-partitions changes between runs. The algorithm works in
+    multiple stages:
+    1. Initial run: runs the full pipeline (ScheduleExecution to
+       CheckPartitionMemoryLimit) without memory-aware partitioning, to create
+       the baseline partitions and analyze their memory requirements.
+    2. Search runs: refine the partitioning based on feedback from previous
+       runs. They run only the passes that determine the execution region
+       sizes (ScheduleExecution, ScheduleConcurrency, ScheduleAllocation,
+       PackConstants, LayoutSlices and CheckPartitionMemoryLimit), and only on
+       the functions with partitioned regions.
+    3. Final run: when all sizes fit the memory limit, the search run completes
+       the full pipeline from its partitioned state, and the memory limit check
+       of that pipeline decides whether the process ends.
+    With --iree-stream-memory-aware-partitioning-reduced-search-pipeline=false,
+    every run is a full run.
     
     When a partition, that later becomes an execution region, exceeds local
     memory constraints (for transients), the pass increases the number of
@@ -375,12 +388,20 @@ def AnalyzeExecutionRegionsPass :
     Pass<"iree-stream-analyze-execution-regions", "mlir::ModuleOp"> {
   let summary = "Analyzes initial execution regions and gathers info about them.";
   let description = [{
-    Visits each execution region and counts the number of ops inside them.
-    Then, it creates a string attribute with initial partition number (1) for each
-    along with the maximum number of partitions.
+    Visits each execution region and counts its real ops (streamable ops that
+    are not constants, global stores, concurrent or update ops) and its
+    dispatches. The regions with more dispatches than a fifth of their real ops
+    are selected for memory-aware partitioning. For each selected region, it
+    adds an entry bottom:mid:top:max to the iree.stream.partitioning.info
+    string attribute: the state of the binary search over the region's number
+    of partitions, which starts at 1:1:N:N for a region with N real ops.
 
-    So, if we have 3 execution regions with 10, 20 and 30 ops respectively, the attribute
-    will be "1:10,1:20,1:30"
+    So, if 3 regions with 10, 20 and 30 real ops are selected, the attribute
+    will be "1:1:10:10,1:1:20:20,1:1:30:30".
+
+    It also records the names of the functions that contain these regions in
+    the iree.stream.partitioning.functions attribute, so that the feedback loop
+    can run its later iterations on those functions only.
   }];
   let dependentDialects = [
     "IREE::Stream::StreamDialect",

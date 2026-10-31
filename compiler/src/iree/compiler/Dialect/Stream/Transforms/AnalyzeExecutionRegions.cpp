@@ -1,6 +1,7 @@
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h"
 
 #include "llvm/Support/Debug.h"
+#include "mlir/IR/SymbolTable.h"
 
 #define DEBUG_TYPE "iree-stream-analyze-execution-regions"
 
@@ -69,6 +70,9 @@ struct AnalyzeExecutionRegionsPass
       return;
 
     llvm::SmallVector<int64_t> info;
+    // Names of the callables with selected regions; an initializer has no
+    // name and is recorded as "".
+    llvm::SmallVector<std::string> functions;
 
     for (auto &parentOp : llvm::make_early_inc_range(moduleOp.getOps())) {
       if (auto asyncFuncOp = dyn_cast<IREE::Stream::AsyncFuncOp>(parentOp)) {
@@ -83,11 +87,17 @@ struct AnalyzeExecutionRegionsPass
       llvm::SmallVector<Operation *> operations;
       callableOp.walk([&](Operation *op) { operations.push_back(op); });
 
+      size_t numSelected = info.size();
       for (auto op : operations) {
         auto executeOp = llvm::dyn_cast<IREE::Stream::AsyncExecuteOp>(op);
         if (executeOp) {
           analyze(executeOp, info);
         }
+      }
+      if (info.size() != numSelected) {
+        auto symbolName = parentOp.getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName());
+        functions.push_back(symbolName ? symbolName.str() : std::string());
       }
     }
 
@@ -99,6 +109,9 @@ struct AnalyzeExecutionRegionsPass
     OpBuilder builder(moduleOp);
     moduleOp->setAttr("iree.stream.partitioning.info",
                       builder.getStringAttr(attrStr));
+    moduleOp->setAttr("iree.stream.partitioning.functions",
+                      builder.getStrArrayAttr(llvm::SmallVector<StringRef>(
+                          functions.begin(), functions.end())));
   }
 };
 
