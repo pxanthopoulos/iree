@@ -26,14 +26,21 @@
 
 namespace mlir::iree_compiler::IREE::Stream {
 
-static llvm::cl::opt<bool> clMemoryAwarePartitioningEnableScheduling(
-    "iree-stream-memory-aware-partitioning-enable-scheduling",
-    llvm::cl::desc("Schedule the final memory-aware partitions with CP-SAT "
-                   "instead of using their topological order"),
-    llvm::cl::init(false));
+enum class MemoryAwareScheduler { Off, CPSAT, RPO };
+
+static llvm::cl::opt<MemoryAwareScheduler> clMemoryAwarePartitioningScheduler(
+    "iree-stream-memory-aware-partitioning-scheduler",
+    llvm::cl::desc("How to order the final memory-aware partitions."),
+    llvm::cl::values(clEnumValN(MemoryAwareScheduler::Off, "off",
+                                "Their topological order (default)."),
+                     clEnumValN(MemoryAwareScheduler::CPSAT, "cpsat",
+                                "CP-SAT, warm-started with the RPO heuristic."),
+                     clEnumValN(MemoryAwareScheduler::RPO, "rpo",
+                                "The RPO heuristic alone.")),
+    llvm::cl::init(MemoryAwareScheduler::Off));
 
 bool isMemoryAwareSchedulingEnabled() {
-  return clMemoryAwarePartitioningEnableScheduling;
+  return clMemoryAwarePartitioningScheduler != MemoryAwareScheduler::Off;
 }
 
 struct MemoryAwarePartitioningConfig {
@@ -624,7 +631,7 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         std::chrono::steady_clock::now() - partitioningStart;
 
     std::vector<uint64_t> schedule;
-    if (clMemoryAwarePartitioningEnableScheduling &&
+    if (isMemoryAwareSchedulingEnabled() &&
         numPartitionsFromAttr[partitionIndex].second) {
       // Weigh partitions with the packer LayoutSlices lays out their
       // transient slabs with, and the alignments ScheduleAllocation uses
@@ -663,7 +670,11 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
       dag_partitioning::scheduling::Scheduler scheduler(
           graph, partitionMapping, true, false, offsetAlignment, rangeAlignment,
           packer);
-      auto result = scheduler.run(3600, 32);
+      auto result = scheduler.run(
+          3600, 32,
+          clMemoryAwarePartitioningScheduler == MemoryAwareScheduler::RPO
+              ? dag_partitioning::scheduling::Solver::RPO
+              : dag_partitioning::scheduling::Solver::CPSAT);
       schedule = result.first;
     } else {
       schedule = graph.partitionTopologicalOrder(partitionMapping);
