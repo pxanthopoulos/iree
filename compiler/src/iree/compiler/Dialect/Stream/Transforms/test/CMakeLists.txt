@@ -61,3 +61,16 @@ iree_lit_test_suite(
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
+
+# Needs the idealloc packer (see build_tools/third_party/idealloc).
+if(IREE_ENABLE_IDEALLOC)
+  iree_lit_test_suite(
+    NAME
+      lit_idealloc
+    SRCS
+      "layout_slices_idealloc.mlir"
+    TOOLS
+      FileCheck
+      iree-opt
+  )
+endif()
