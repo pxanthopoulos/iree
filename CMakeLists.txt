@@ -47,6 +47,7 @@ option(IREE_ENABLE_COMPILER_TRACING "Enables instrumented compiler tracing." OFF
 option(IREE_ENABLE_RENDERDOC_PROFILING "Enables profiling HAL devices with the RenderDoc tool." OFF)
 option(IREE_ENABLE_THREADING "Builds IREE in with thread library support." ON)
 option(IREE_ENABLE_CLANG_TIDY "Builds IREE in with clang tidy enabled on IREE's libraries." OFF)
+option(IREE_ENABLE_IDEALLOC "Builds the idealloc packer for static transient slices (third_party/idealloc; needs cargo)." OFF)
 
 set(IREE_TRACING_PROVIDER_DEFAULT "tracy" CACHE STRING "Default tracing implementation.")
 set(IREE_TRACING_PROVIDER ${IREE_TRACING_PROVIDER_DEFAULT} CACHE STRING "Chooses which built-in tracing implementation is used when tracing is enabled.")
@@ -1087,6 +1088,11 @@ endif()
 # DAG partitioning library
 if(IREE_BUILD_COMPILER)
   add_subdirectory(third_party/dag-partitioning EXCLUDE_FROM_ALL)
+endif()
+
+# idealloc static slice packer (an empty target unless IREE_ENABLE_IDEALLOC)
+if(IREE_BUILD_COMPILER)
+  add_subdirectory(build_tools/third_party/idealloc EXCLUDE_FROM_ALL)
 endif()
 
 #-------------------------------------------------------------------------------

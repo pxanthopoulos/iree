@@ -41,3 +41,6 @@
 	path = third_party/dag-partitioning
 	url = https://github.com/pxanthopoulos/dag-partitioning
 	branch = scheduling
+[submodule "third_party/idealloc"]
+	path = third_party/idealloc
+	url = https://github.com/pxanthopoulos/idealloc

@@ -97,6 +97,7 @@ iree_cc_library(
     iree::compiler::Dialect::Util::Transforms
     iree::compiler::Dialect::VM::IR
     iree::compiler::Utils
+    idealloc_ffi
   PUBLIC
 )
 
@@ -121,3 +122,12 @@ iree_tablegen_doc(
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
+
+# The idealloc static slice packer (build_tools/third_party/idealloc), for
+# LayoutSlices.cpp only.
+if(IREE_ENABLE_IDEALLOC)
+  set_source_files_properties(LayoutSlices.cpp PROPERTIES
+    COMPILE_DEFINITIONS IREE_HAVE_IDEALLOC=1
+    INCLUDE_DIRECTORIES "${IREE_IDEALLOC_INCLUDE_DIR}"
+  )
+endif()
