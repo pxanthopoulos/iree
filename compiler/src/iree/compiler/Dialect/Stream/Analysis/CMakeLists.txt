@@ -18,6 +18,7 @@ iree_cc_library(
     "Partitioning.h"
     "ResourceHazards.h"
     "ResourceUsage.h"
+    "StaticSlabPacking.h"
   SRCS
     "Affinity.cpp"
     "Partitioning.cpp"
@@ -25,6 +26,7 @@ iree_cc_library(
     "Partitioning/ReferencePartitioning.cpp"
     "ResourceHazards.cpp"
     "ResourceUsage.cpp"
+    "StaticSlabPacking.cpp"
   DEPS
     LLVMSupport
     MLIRAnalysis
@@ -40,7 +42,17 @@ iree_cc_library(
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::IR
     dag_partitioning
+    idealloc_ffi
   PUBLIC
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
+
+# The idealloc static slice packer (build_tools/third_party/idealloc), for
+# StaticSlabPacking.cpp only.
+if(IREE_ENABLE_IDEALLOC)
+  set_source_files_properties(StaticSlabPacking.cpp PROPERTIES
+    COMPILE_DEFINITIONS IREE_HAVE_IDEALLOC=1
+    INCLUDE_DIRECTORIES "${IREE_IDEALLOC_INCLUDE_DIR}"
+  )
+endif()

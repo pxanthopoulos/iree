@@ -21,12 +21,14 @@ iree_compiler_cc_library(
         "Partitioning/ReferencePartitioning.cpp",
         "ResourceHazards.cpp",
         "ResourceUsage.cpp",
+        "StaticSlabPacking.cpp",
     ],
     hdrs = [
         "Affinity.h",
         "Partitioning.h",
         "ResourceHazards.h",
         "ResourceUsage.h",
+        "StaticSlabPacking.h",
     ],
     deps = [
         "//compiler/src/iree/compiler/Dialect/Stream/IR",

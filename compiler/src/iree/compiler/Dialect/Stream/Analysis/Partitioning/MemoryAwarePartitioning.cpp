@@ -2,6 +2,7 @@
 #include "RecursivePartitioner.h"
 #include "Scheduling.h"
 #include "iree/compiler/Dialect/Stream/Analysis/Partitioning.h"
+#include "iree/compiler/Dialect/Stream/Analysis/StaticSlabPacking.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CommandLine.h"
@@ -625,13 +626,43 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
     std::vector<uint64_t> schedule;
     if (clMemoryAwarePartitioningEnableScheduling &&
         numPartitionsFromAttr[partitionIndex].second) {
-      // Pack partition slabs with the alignments ScheduleAllocation uses
+      // Weigh partitions with the packer LayoutSlices lays out their
+      // transient slabs with, and the alignments ScheduleAllocation uses
       auto resourceConfig =
           IREE::Stream::ResourceConfigAttr::lookup(partition.ops.front());
+      int64_t offsetAlignment = resourceConfig.getMinBufferOffsetAlignment();
+      int64_t rangeAlignment = resourceConfig.getMinBufferRangeAlignment();
+      Location loc = partition.ops.front()->getLoc();
+      auto packer =
+          [offsetAlignment, rangeAlignment, loc](
+              std::vector<dag_partitioning::scheduling::utils::Tensor> &tensors)
+          -> uint64_t {
+        SmallVector<IREE::Stream::StaticSlabSlice> slices;
+        slices.reserve(tensors.size());
+        for (auto &tensor : tensors) {
+          slices.push_back({static_cast<int64_t>(tensor.birth),
+                            static_cast<int64_t>(tensor.death),
+                            static_cast<int64_t>(tensor.size)});
+        }
+        FailureOr<IREE::Stream::StaticSlabLayout> layout =
+            IREE::Stream::packStaticSlab(slices, offsetAlignment,
+                                         rangeAlignment, loc);
+        if (failed(layout)) {
+          // idealloc was asked for but is not built in; LayoutSlices reports
+          // it and fails the compilation
+          return dag_partitioning::scheduling::utils::packBestFit(
+              tensors, offsetAlignment, rangeAlignment);
+        }
+        for (auto [tensor, offset, size] :
+             llvm::zip_equal(tensors, layout->offsets, layout->sizes)) {
+          tensor.offset = offset;
+          tensor.size = size;
+        }
+        return layout->size;
+      };
       dag_partitioning::scheduling::Scheduler scheduler(
-          graph, partitionMapping, true, false,
-          resourceConfig.getMinBufferOffsetAlignment(),
-          resourceConfig.getMinBufferRangeAlignment());
+          graph, partitionMapping, true, false, offsetAlignment, rangeAlignment,
+          packer);
       auto result = scheduler.run(3600, 32);
       schedule = result.first;
     } else {

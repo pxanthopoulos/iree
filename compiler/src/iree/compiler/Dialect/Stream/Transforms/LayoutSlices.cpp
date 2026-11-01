@@ -4,9 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <list>
-#include <numeric>
-
+#include "iree/compiler/Dialect/Stream/Analysis/StaticSlabPacking.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamDialect.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamTypes.h"
@@ -15,9 +13,7 @@
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "iree/compiler/Utils/IntegerSet.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Attributes.h"
@@ -25,10 +21,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
-
-#if defined(IREE_HAVE_IDEALLOC)
-#include "idealloc.h"
-#endif // IREE_HAVE_IDEALLOC
 
 #define DEBUG_TYPE "iree-stream-layout-slices"
 
@@ -39,259 +31,39 @@ namespace mlir::iree_compiler::IREE::Stream {
 
 namespace {
 
-enum class StaticPacker { Greedy, Idealloc, Best };
-
-static llvm::cl::opt<StaticPacker> clStaticPacker(
-    "iree-stream-layout-slices-static-packer",
-    llvm::cl::desc("Packer for statically-sized transient slices."),
-    llvm::cl::values(
-        clEnumValN(StaticPacker::Greedy, "greedy",
-                   "Greedy best-fit strip packing (default)."),
-        clEnumValN(StaticPacker::Idealloc, "idealloc",
-                   "idealloc (third_party/idealloc; needs a compiler built "
-                   "with -DIREE_ENABLE_IDEALLOC=ON)."),
-        clEnumValN(StaticPacker::Best, "best",
-                   "Runs greedy and idealloc and keeps the smaller slab "
-                   "(greedy on ties).")),
-    llvm::cl::init(StaticPacker::Greedy));
-
-static llvm::cl::opt<unsigned> clIdeallocMaxLives(
-    "iree-stream-layout-slices-idealloc-max-lives",
-    llvm::cl::desc("Number of tries idealloc gets to beat its bootstrap "
-                   "heuristic."),
-    llvm::cl::init(10));
-
-static llvm::cl::opt<double> clIdeallocMaxFrag(
-    "iree-stream-layout-slices-idealloc-max-frag",
-    llvm::cl::desc("idealloc stops once the slab is at most this many times "
-                   "the peak of the live slice sizes (>= 1.0)."),
-    llvm::cl::init(1.0));
-
-static llvm::cl::opt<uint64_t> clIdeallocSeed(
-    "iree-stream-layout-slices-idealloc-seed",
-    llvm::cl::desc("Seed for all of idealloc's random choices; the same seed "
-                   "gives the same layout."),
-    llvm::cl::init(0));
-
-static llvm::cl::opt<bool> clReport(
-    "iree-stream-layout-slices-report",
-    llvm::cl::desc("Prints, for each pack op with static slices, the slab "
-                   "size of each packer run."),
-    llvm::cl::init(false));
-
 using Slice = IREE::Stream::ResourcePackOp::Slice;
 
-static int64_t getStaticSize(const Slice &slice) {
-  return cast<arith::ConstantIndexOp>(slice.dynamicSize.getDefiningOp())
-      .value();
-}
-
-// Offsets of a set of static slices, in slice order, and the slab size they
-// need (aligned to the range alignment).
-struct StaticLayout {
-  SmallVector<int64_t> offsets;
-  int64_t size = 0;
-};
-
-// Packs a set of statically-sized slices by greedy strip packing.
-//
-// This is the same algorithm used in tflite here:
-// https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/simple_memory_arena.cc
-// It's not fantastic and can end up with a significant amount of wastage.
-// They do the packing at runtime and as such care more about performance than
-// we do while doing the packing here offline. For this initial version I
-// wanted to ensure we matched apples/apples their implementation.
-//
-// We should use a set of heuristics and pick the smallest one. There are also
-// some really great papers that have approximations (as all of these are -
-// 2D strip packing is NP-hard) such as
-// https://www.sciencedirect.com/science/article/pii/S0925772113001016 that
-// someone with a brain able to parse mathy papers can try implementing.
-//
-// Offsets are relative to the start of the static slab.
-static StaticLayout packStaticSlicesGreedily(ArrayRef<Slice> slices,
-                                             int64_t offsetAlignment,
-                                             int64_t rangeAlignment) {
-  struct Reservation {
-    const Slice *slice = nullptr;
-    int64_t staticOffset = 0;
-    int64_t staticSize = 0;
-  };
-  static constexpr int64_t UNASSIGNED = INT64_MAX;
-
-  std::list<Reservation> reservations;
-  StaticLayout layout;
-  int64_t highwaterMark = 0;
-  for (auto &slice : slices) {
-    int64_t bestOffset = UNASSIGNED;
-    int64_t bestOffsetFit = UNASSIGNED;
-    int64_t alignedSize =
-        IREE::Util::align(getStaticSize(slice), rangeAlignment);
-
-    // Iterate through reservations (sorted by ascending offset) and identify
-    // gaps in which the slice will fit. To reduce wastage we want to find the
-    // smallest gap.
-    int64_t currentOffset = 0;
-    for (auto &reservation : reservations) {
-      if (!reservation.slice->intersects(slice)) {
-        // Non-overlapping - we can reuse the currentOffset (assuming we find
-        // no better place).
-        continue;
-      }
-
-      // If we found a gap >= the required size and smaller than
-      // previous best fit take it.
-      int64_t alignedOffset = IREE::Util::align(currentOffset, offsetAlignment);
-      if (alignedOffset + alignedSize <= reservation.staticOffset &&
-          reservation.staticOffset - alignedOffset < bestOffsetFit) {
-        bestOffset = alignedOffset;
-        bestOffsetFit = reservation.staticOffset - currentOffset;
-      }
-      currentOffset = std::max(currentOffset, reservation.staticOffset +
-                                                  reservation.staticSize);
-    }
-    if (bestOffset == UNASSIGNED) {
-      bestOffset = IREE::Util::align(currentOffset, offsetAlignment);
-    }
-
-    // Reserve the memory.
-    Reservation reservation;
-    reservation.slice = &slice;
-    reservation.staticOffset = bestOffset;
-    reservation.staticSize = alignedSize;
-    auto insertionIt = reservations.begin();
-    while (insertionIt != reservations.end() &&
-           insertionIt->staticOffset < reservation.staticOffset) {
-      ++insertionIt;
-    }
-    reservations.insert(insertionIt, reservation);
-    layout.offsets.push_back(bestOffset);
-
-    // Update highwater mark indicating how much memory needs to be allocated
-    // for the entire slab.
-    highwaterMark = std::max(highwaterMark, bestOffset + alignedSize);
-  }
-
-  layout.size = IREE::Util::align(highwaterMark, rangeAlignment);
-  return layout;
-}
-
-#if defined(IREE_HAVE_IDEALLOC)
-// Packs a set of statically-sized slices with idealloc
-// (https://arxiv.org/abs/2504.04874). Slice lifetimes are closed intervals,
-// passed as such. Sizes are aligned to the range alignment and then rounded
-// up to a multiple of both alignments, so that every offset idealloc returns
-// (a sum of sizes) is aligned too; with the default alignments (equal) this
-// is the same size the greedy packer uses. idealloc checks its layout
-// against the slice lifetimes before returning it.
-//
-// Fails with a message if idealloc reports an error.
-static FailureOr<StaticLayout>
-packStaticSlicesWithIdealloc(ArrayRef<Slice> slices, int64_t offsetAlignment,
-                             int64_t rangeAlignment, std::string &error) {
-  SmallVector<idealloc_buffer_t> buffers;
-  buffers.reserve(slices.size());
-  for (auto &slice : slices) {
-    buffers.push_back({static_cast<uint64_t>(slice.lifetimeStart),
-                       static_cast<uint64_t>(slice.lifetimeEnd),
-                       static_cast<uint64_t>(IREE::Util::align(
-                           getStaticSize(slice), rangeAlignment))});
-  }
-
-  idealloc_options_t options;
-  idealloc_options_initialize(&options);
-  options.liveness = IDEALLOC_LIVENESS_INCLUSIVE;
-  options.max_lives = clIdeallocMaxLives;
-  options.max_frag = clIdeallocMaxFrag;
-  options.seed = clIdeallocSeed;
-  options.alignment = std::lcm(std::max<int64_t>(offsetAlignment, 1),
-                               std::max<int64_t>(rangeAlignment, 1));
-
-  SmallVector<uint64_t> offsets(buffers.size());
-  uint64_t makespan = 0;
-  idealloc_status_t status = idealloc_place(
-      buffers.data(), buffers.size(), &options, offsets.data(), &makespan);
-  if (status != IDEALLOC_STATUS_OK) {
-    error = idealloc_status_string(status);
-    return failure();
-  }
-
-  StaticLayout layout;
-  layout.offsets.assign(offsets.begin(), offsets.end());
-  layout.size =
-      IREE::Util::align(static_cast<int64_t>(makespan), rangeAlignment);
-  return layout;
-}
-#endif // IREE_HAVE_IDEALLOC
-
-// Lays out the static slices of |packOp| with the packer chosen by
-// --iree-stream-layout-slices-static-packer. Fails (with an error on
-// |packOp|) only if idealloc was asked for but is not built in. If idealloc
-// itself fails, warns and falls back to the greedy layout.
-static FailureOr<StaticLayout>
+// Lays out the static slices of |packOp| with packStaticSlab, the packer
+// memory-aware partitioning also weighs partitions with. Fails (with an error
+// on |packOp|) only if idealloc was asked for but is not built in.
+static FailureOr<StaticSlabLayout>
 layoutStaticSlices(IREE::Stream::ResourcePackOp packOp, ArrayRef<Slice> slices,
                    IREE::Stream::ResourceConfigAttr resourceConfig) {
-  int64_t offsetAlignment = resourceConfig.getMinBufferOffsetAlignment();
-  int64_t rangeAlignment = resourceConfig.getMinBufferRangeAlignment();
-  StaticPacker packer = clStaticPacker;
-
-  std::optional<StaticLayout> greedy;
-  if (packer != StaticPacker::Idealloc) {
-    greedy = packStaticSlicesGreedily(slices, offsetAlignment, rangeAlignment);
+  SmallVector<StaticSlabSlice> slabSlices;
+  slabSlices.reserve(slices.size());
+  for (auto &slice : slices) {
+    slabSlices.push_back(
+        {slice.lifetimeStart, slice.lifetimeEnd,
+         cast<arith::ConstantIndexOp>(slice.dynamicSize.getDefiningOp())
+             .value()});
   }
-  if (packer == StaticPacker::Greedy) {
-    if (clReport) {
-      // One write per line: functions are laid out in parallel.
-      std::string line;
-      llvm::raw_string_ostream os(line);
-      os << "Layout slices: " << slices.size() << " static slices, greedy "
-         << greedy->size << " bytes\n";
-      llvm::errs() << line;
-    }
-    return std::move(*greedy);
+  FailureOr<StaticSlabLayout> layout = packStaticSlab(
+      slabSlices, resourceConfig.getMinBufferOffsetAlignment(),
+      resourceConfig.getMinBufferRangeAlignment(), packOp.getLoc());
+  if (failed(layout)) {
+    packOp.emitError()
+        << "--iree-stream-layout-slices-static-packer=idealloc/best needs a "
+           "compiler built with -DIREE_ENABLE_IDEALLOC=ON";
   }
-
-#if defined(IREE_HAVE_IDEALLOC)
-  std::string error;
-  FailureOr<StaticLayout> idealloc = packStaticSlicesWithIdealloc(
-      slices, offsetAlignment, rangeAlignment, error);
-  if (failed(idealloc)) {
-    packOp.emitWarning() << "idealloc failed (" << error
-                         << "); using the greedy packer";
-    if (!greedy) {
-      greedy =
-          packStaticSlicesGreedily(slices, offsetAlignment, rangeAlignment);
-    }
-    return std::move(*greedy);
-  }
-
-  bool useIdealloc = !greedy || idealloc->size < greedy->size;
-  if (clReport) {
-    std::string line;
-    llvm::raw_string_ostream os(line);
-    os << "Layout slices: " << slices.size() << " static slices";
-    if (greedy) {
-      os << ", greedy " << greedy->size << " bytes";
-    }
-    os << ", idealloc " << idealloc->size << " bytes, using "
-       << (useIdealloc ? "idealloc" : "greedy") << "\n";
-    llvm::errs() << line;
-  }
-  return useIdealloc ? std::move(*idealloc) : std::move(*greedy);
-#else
-  packOp.emitError()
-      << "--iree-stream-layout-slices-static-packer=idealloc/best needs a "
-         "compiler built with -DIREE_ENABLE_IDEALLOC=ON";
-  return failure();
-#endif // IREE_HAVE_IDEALLOC
+  return layout;
 }
 
 // Updates the packed offset SSA values of |slices| to start at |baseOffset|.
 // Returns |baseOffset| + the size of the static slab.
 static Value emitStaticLayout(IREE::Stream::ResourcePackOp packOp,
                               Value baseOffset, ArrayRef<Slice> slices,
-                              const StaticLayout &layout, IndexSet &indexSet,
-                              OpBuilder &builder) {
+                              const StaticSlabLayout &layout,
+                              IndexSet &indexSet, OpBuilder &builder) {
   for (auto [slice, offset] : llvm::zip_equal(slices, layout.offsets)) {
     Value packedOffset = slice.packedOffset;
     packedOffset.replaceAllUsesWith(builder.createOrFold<arith::AddIOp>(
@@ -432,7 +204,7 @@ struct LayoutSlicesPass
       // compile time.
       auto offset = packOp.getOffset() ? packOp.getOffset() : indexSet.get(0);
       if (!staticSlices.empty()) {
-        FailureOr<StaticLayout> layout =
+        FailureOr<StaticSlabLayout> layout =
             layoutStaticSlices(packOp, staticSlices, resourceConfig);
         if (failed(layout)) {
           return WalkResult::interrupt();
