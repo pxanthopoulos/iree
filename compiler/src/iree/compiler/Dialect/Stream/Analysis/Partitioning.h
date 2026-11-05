@@ -119,8 +119,10 @@ PartitionSet partitionStreamableOps(IREE::Stream::PartitioningConfigAttr config,
 PartitionSet memoryAwarePartition(PartitionSet initialPartitions, Block *block);
 
 // Returns true if memoryAwarePartition orders the final partitions with a
-// scheduler (--iree-stream-memory-aware-partitioning-scheduler=cpsat or rpo).
-bool isMemoryAwareSchedulingEnabled();
+// scheduler
+// (--iree-stream-memory-aware-partitioning-inter-region-scheduler=cpsat or
+// rpo).
+bool isInterRegionSchedulingEnabled();
 
 // Between these two calls, memoryAwarePartition builds the dagP graph of each
 // region of |moduleOp| once and reuses it. The memory-aware partitioning

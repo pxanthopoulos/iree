@@ -320,7 +320,7 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     // order and let the topological sort below hoist everything else.
     if (enableMemoryAwarePartitioning &&
         (clMemoryAwarePartitioningRespectSchedule ||
-         isMemoryAwareSchedulingEnabled())) {
+         isInterRegionSchedulingEnabled())) {
       auto insertIt = block->mightHaveTerminator()
                           ? Block::iterator(block->getTerminator())
                           : block->end();

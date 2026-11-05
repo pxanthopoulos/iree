@@ -26,21 +26,21 @@
 
 namespace mlir::iree_compiler::IREE::Stream {
 
-enum class MemoryAwareScheduler { Off, CPSAT, RPO };
+enum class InterRegionScheduler { Off, CPSAT, RPO };
 
-static llvm::cl::opt<MemoryAwareScheduler> clMemoryAwarePartitioningScheduler(
-    "iree-stream-memory-aware-partitioning-scheduler",
+static llvm::cl::opt<InterRegionScheduler> clInterRegionScheduler(
+    "iree-stream-memory-aware-partitioning-inter-region-scheduler",
     llvm::cl::desc("How to order the final memory-aware partitions."),
-    llvm::cl::values(clEnumValN(MemoryAwareScheduler::Off, "off",
+    llvm::cl::values(clEnumValN(InterRegionScheduler::Off, "off",
                                 "Their topological order (default)."),
-                     clEnumValN(MemoryAwareScheduler::CPSAT, "cpsat",
+                     clEnumValN(InterRegionScheduler::CPSAT, "cpsat",
                                 "CP-SAT, warm-started with the RPO heuristic."),
-                     clEnumValN(MemoryAwareScheduler::RPO, "rpo",
+                     clEnumValN(InterRegionScheduler::RPO, "rpo",
                                 "The RPO heuristic alone.")),
-    llvm::cl::init(MemoryAwareScheduler::Off));
+    llvm::cl::init(InterRegionScheduler::Off));
 
-bool isMemoryAwareSchedulingEnabled() {
-  return clMemoryAwarePartitioningScheduler != MemoryAwareScheduler::Off;
+bool isInterRegionSchedulingEnabled() {
+  return clInterRegionScheduler != InterRegionScheduler::Off;
 }
 
 struct MemoryAwarePartitioningConfig {
@@ -631,7 +631,7 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
         std::chrono::steady_clock::now() - partitioningStart;
 
     std::vector<uint64_t> schedule;
-    if (isMemoryAwareSchedulingEnabled() &&
+    if (isInterRegionSchedulingEnabled() &&
         numPartitionsFromAttr[partitionIndex].second) {
       // Weigh partitions with the packer LayoutSlices lays out their
       // transient slabs with, and the alignments ScheduleAllocation uses
@@ -672,7 +672,7 @@ PartitionSet memoryAwarePartition(PartitionSet initialPartitions,
           packer);
       auto result = scheduler.run(
           3600, 32,
-          clMemoryAwarePartitioningScheduler == MemoryAwareScheduler::RPO
+          clInterRegionScheduler == InterRegionScheduler::RPO
               ? dag_partitioning::scheduling::Solver::RPO
               : dag_partitioning::scheduling::Solver::CPSAT);
       schedule = result.first;
