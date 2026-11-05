@@ -36,12 +36,6 @@ namespace mlir::iree_compiler::IREE::Stream {
 #define GEN_PASS_DEF_SCHEDULEEXECUTIONPASS
 #include "iree/compiler/Dialect/Stream/Transforms/Passes.h.inc"
 
-static llvm::cl::opt<bool> clMemoryAwarePartitioningRespectSchedule(
-    "iree-stream-memory-aware-partitioning-respect-schedule",
-    llvm::cl::desc("Place memory-aware execution regions in the order of the "
-                   "partition set (the scheduler's order) instead of at the "
-                   "original position of each partition's last op"),
-    llvm::cl::init(false));
 
 namespace {
 
@@ -318,9 +312,7 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
     // original block, which ignores the partition set order. Re-sequence the
     // execute ops (with their awaits) at the end of the block in partition
     // order and let the topological sort below hoist everything else.
-    if (enableMemoryAwarePartitioning &&
-        (clMemoryAwarePartitioningRespectSchedule ||
-         isInterRegionSchedulingEnabled())) {
+    if (enableMemoryAwarePartitioning && isInterRegionSchedulingEnabled()) {
       auto insertIt = block->mightHaveTerminator()
                           ? Block::iterator(block->getTerminator())
                           : block->end();
